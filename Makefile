@@ -1,4 +1,4 @@
-.PHONY: check check-clean
+.PHONY: check check-clean eval-falsify
 
 # Full gate: format, lint (no auto-fix), types, tests, entry point.
 # Their pyproject sets [tool.ruff] fix = true, so a bare `ruff check` would rewrite
@@ -14,3 +14,9 @@ check:
 # temp HOME, uv sync). This target does not build that wrapper itself — it is an
 # alias for now; the hermetic invocation is exercised manually, outside this file.
 check-clean: check
+
+# Falsification check: proves the eval pipeline can drive the headline accuracy to zero
+# through the same load_dataset -> run_eval path the real eval will use, via a stub client
+# that is wrong by construction on every turn.
+eval-falsify:
+	uv run python -m src.services.eval_falsify_check
