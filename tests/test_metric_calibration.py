@@ -9,12 +9,20 @@ handle (28% of numeric dev turns land in each of the (0, 1] and (1, 100] magnitu
 i.e. answers commonly expressed interchangeably as a ratio or a percentage). Freezing these
 here, against gold data only, means the metric is locked before session 1 ends, and a reviewer
 can re-run this file to reproduce the derivation rather than trust a number in a report.
+
+A parametrised epsilon sweep (`test_agreement_count_at_epsilon`) plus two follow-on assertions
+defend the frozen 1e-3 tolerance as a deliberate margin above the true agreement floor, not just
+a target number: they show where agreement saturates, how far 1e-3 sits above the largest
+observed relative error, and that nothing changes between 1e-3 and 1e-2 (the tolerance hides
+zero turns in that band).
 """
 
 import json
 import re
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 DATA_PATH = Path(__file__).parent.parent / "data" / "convfinqa_dataset.json"
 
@@ -27,6 +35,25 @@ EXPECTED_MID_BUCKET_COUNT = 464
 HIGH_PRECISION_DECIMAL_PLACES = 5
 SMALL_BUCKET_UPPER_BOUND = 1
 MID_BUCKET_UPPER_BOUND = 100
+
+# (epsilon, expected count of numeric dev turns with relative error <= epsilon out of 1486).
+# Verified by directly sweeping `_numeric_rel_errors()` against the dev split.
+EPSILON_AGREEMENT_COUNTS = [
+    (0.0, 945),
+    (1e-6, 1166),
+    (1e-5, 1317),
+    (1e-4, 1455),
+    (1e-3, 1486),
+    (1e-2, 1486),
+]
+
+# The true minimum epsilon for full agreement (the largest observed relative error) must sit
+# strictly below the frozen tolerance and above this floor, bounding it without pinning a float
+# to sixteen decimal places for bit-for-bit reproducibility across environments.
+MIN_OBSERVED_RELATIVE_ERROR_FLOOR = 5e-4
+
+# 10x the frozen tolerance, used only to show the gap between 1e-3 and 1e-2 is empty.
+WIDE_TOLERANCE_FOR_GAP_CHECK = 1e-2
 
 
 def _tokenize(prog: str) -> list[tuple[str, list[str]]]:
@@ -105,31 +132,38 @@ def _dev_turns() -> list[tuple[str, float | str]]:
     return turns
 
 
+def _numeric_rel_errors() -> list[float]:
+    """Compute the relative error of every numeric dev turn's executed vs. gold answer.
+
+    Skips string-typed (yes/no) turns entirely. This is the single loop every calibration
+    test in this file sweeps over, so the sweep and the frozen-tolerance checks agree by
+    construction.
+    """
+    errors = []
+    for prog, gold in _dev_turns():
+        if isinstance(gold, str):
+            continue
+        got = _execute(prog)
+        assert isinstance(got, float), (
+            f"non-numeric execution result for numeric gold: {prog!r}"
+        )
+        error = abs(got - gold) if gold == 0 else abs(got - gold) / abs(gold)
+        errors.append(error)
+    return errors
+
+
 def test_dev_gold_replay_agrees_within_0_1_percent() -> None:
     """Executing every numeric dev turn agrees with gold within 0.1% relative error.
 
     Also documents how far off exact float equality is (945/1486), which is why a tolerance
     is required at all rather than an exact-match check.
     """
-    exact_matches = 0
-    numeric_turn_count = 0
-    for prog, gold in _dev_turns():
-        if isinstance(gold, str):
-            continue
-        numeric_turn_count += 1
-        got = _execute(prog)
-        assert isinstance(got, float), (
-            f"non-numeric execution result for numeric gold: {prog!r}"
-        )
-        if got == gold:
-            exact_matches += 1
-        error = abs(got - gold) if gold == 0 else abs(got - gold) / abs(gold)
-        assert error <= RELATIVE_ERROR_TOLERANCE, (
-            f"{prog!r} executed to {got}, gold {gold}, relative error {error}"
-        )
+    errors = _numeric_rel_errors()
+    exact_matches = sum(1 for error in errors if error == 0)
 
-    assert numeric_turn_count == EXPECTED_NUMERIC_TURN_COUNT
+    assert len(errors) == EXPECTED_NUMERIC_TURN_COUNT
     assert exact_matches == EXPECTED_EXACT_MATCH_COUNT
+    assert max(errors) <= RELATIVE_ERROR_TOLERANCE
 
 
 def test_yes_no_turns_are_never_coerced() -> None:
@@ -183,3 +217,32 @@ def test_scale_flip_bucket_size() -> None:
 
     assert small_bucket_count == EXPECTED_SMALL_BUCKET_COUNT
     assert mid_bucket_count == EXPECTED_MID_BUCKET_COUNT
+
+
+@pytest.mark.parametrize(("eps", "expected_count"), EPSILON_AGREEMENT_COUNTS)
+def test_agreement_count_at_epsilon(eps: float, expected_count: int) -> None:
+    """Sweep the relative-error tolerance and count how many numeric dev turns agree at each
+    step, showing agreement saturates at 1486/1486 by 1e-3 and that 1e-2 adds nothing further."""
+    errors = _numeric_rel_errors()
+    matching = sum(1 for error in errors if error <= eps)
+
+    assert matching == expected_count
+
+
+def test_frozen_tolerance_is_a_thin_deliberate_margin() -> None:
+    """The frozen 1e-3 tolerance sits just above the true minimum epsilon for full agreement
+    (the largest observed relative error), not at some arbitrarily loose multiple of it."""
+    max_observed_relative_error = max(_numeric_rel_errors())
+
+    assert max_observed_relative_error < RELATIVE_ERROR_TOLERANCE
+    assert max_observed_relative_error > MIN_OBSERVED_RELATIVE_ERROR_FLOOR
+
+
+def test_tolerance_hides_nothing_between_1e_3_and_1e_2() -> None:
+    """No numeric dev turn's relative error falls in (1e-3, 1e-2]: widening the tolerance by
+    10x from the frozen value would accept zero additional turns."""
+    errors = _numeric_rel_errors()
+    tight_count = sum(1 for error in errors if error <= RELATIVE_ERROR_TOLERANCE)
+    wide_count = sum(1 for error in errors if error <= WIDE_TOLERANCE_FOR_GAP_CHECK)
+
+    assert wide_count == tight_count
