@@ -101,7 +101,7 @@ designed. This table is the raw ledger and includes session 4's work for complet
 ## Totals
 
 29 ledger rows across this and the prior three sessions (26 landed as commits + 1 reverted
-in sessions 1–3, plus 2 more in session 4), 3+1 sessions, 29 commits on the working branch
+in sessions 1–3, plus 2 more in session 4), 3+1 sessions, 30 commits on the working branch
 as of this slice (a few slices produced a small follow-on commit for a fix surfaced
 immediately after landing — noted individually in the ledger's own result text, not hidden
 inside a single commit's diff) — verifiable with `git rev-list --count main..HEAD`.
