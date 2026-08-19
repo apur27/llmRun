@@ -102,10 +102,23 @@ class MissingApiKeyError(Exception):
 class AnthropicClient:
     """A `ModelClient` backed by the real Anthropic API, with prompt caching and a calculator tool."""
 
-    def __init__(self, client: anthropic.Anthropic, cache: ResponseCache) -> None:
-        """Wrap an already-constructed SDK client and response cache — both injected, not built here."""
+    def __init__(
+        self,
+        client: anthropic.Anthropic,
+        cache: ResponseCache,
+        system_instructions: str = _SYSTEM_INSTRUCTIONS,
+    ) -> None:
+        """Wrap an already-constructed SDK client and response cache — both injected, not built here.
+
+        `system_instructions` selects which system-prompt variant this instance sends and hashes
+        into its cache keys, defaulting to the module's own `_SYSTEM_INSTRUCTIONS`. Callers running
+        an A/B comparison (e.g. the percentage-convention experiment) build one `AnthropicClient`
+        per variant string, so the two variants' answers for the same record/question are never
+        conflated under one cache entry.
+        """
         self._client = client
         self._cache = cache
+        self._system_instructions = system_instructions
         self._input_tokens = 0
         self._output_tokens = 0
         self._cache_creation_tokens = 0
@@ -132,7 +145,11 @@ class AnthropicClient:
         return self._cache_read_tokens
 
     @classmethod
-    def from_env(cls, cache: ResponseCache | None = None) -> "AnthropicClient":
+    def from_env(
+        cls,
+        cache: ResponseCache | None = None,
+        system_instructions: str = _SYSTEM_INSTRUCTIONS,
+    ) -> "AnthropicClient":
         """Build a client from `ANTHROPIC_API_KEY`, failing clean if it is unset.
 
         Checks the environment variable explicitly *before* constructing the SDK client. If
@@ -149,6 +166,7 @@ class AnthropicClient:
         return cls(
             anthropic.Anthropic(api_key=api_key),
             cache if cache is not None else ResponseCache(),
+            system_instructions=system_instructions,
         )
 
     def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
@@ -159,12 +177,12 @@ class AnthropicClient:
         repeated eval run never re-bills an already-answered turn.
         """
         question = record.dialogue.conv_questions[turn_index]
-        prompt = _prompt_text(record, question)
+        prompt = _prompt_text(record, question, self._system_instructions)
         cached = self._cache.get(prompt)
         if cached is not None:
             return _parse_final_answer(cached)
 
-        system = _system_blocks(record)
+        system = _system_blocks(record, self._system_instructions)
         messages: list[MessageParam] = [{"role": "user", "content": question}]
         final_text = self._run_tool_loop(system, messages)
         final_text = self._ensure_parseable(system, messages, final_text)
@@ -245,7 +263,9 @@ def estimate_cost_usd(
     )
 
 
-def _system_blocks(record: ConvFinQARecord) -> list[TextBlockParam]:
+def _system_blocks(
+    record: ConvFinQARecord, system_instructions: str
+) -> list[TextBlockParam]:
     """Build the system prompt: instructions plus the document, cached across every turn's call.
 
     `cache_control` on the document block is the Anthropic prompt-caching mechanism: the
@@ -253,7 +273,7 @@ def _system_blocks(record: ConvFinQARecord) -> list[TextBlockParam]:
     conversation, so marking it cacheable avoids re-billing it turn after turn.
     """
     return [
-        {"type": "text", "text": _SYSTEM_INSTRUCTIONS},
+        {"type": "text", "text": system_instructions},
         {
             "type": "text",
             "text": _document_text(record),
@@ -268,9 +288,17 @@ def _document_text(record: ConvFinQARecord) -> str:
     return f"{record.doc.pre_text}\n\n{table_text}\n\n{record.doc.post_text}"
 
 
-def _prompt_text(record: ConvFinQARecord, question: str) -> str:
-    """The full prompt text (system instructions, document, question) used as the cache key."""
-    return f"{_SYSTEM_INSTRUCTIONS}\n\n{_document_text(record)}\n\nQuestion: {question}"
+def _prompt_text(
+    record: ConvFinQARecord, question: str, system_instructions: str
+) -> str:
+    """The full prompt text (system instructions, document, question) used as the cache key.
+
+    Takes `system_instructions` as the same value the caller sends to `_system_blocks`, rather
+    than reading the module-level constant directly — the two variants must never converge on
+    the same cache key, or an A/B comparison run through this cache would silently replay the
+    first variant's cached answers for the second.
+    """
+    return f"{system_instructions}\n\n{_document_text(record)}\n\nQuestion: {question}"
 
 
 def _tool_results(content: list[Any]) -> list[Any]:

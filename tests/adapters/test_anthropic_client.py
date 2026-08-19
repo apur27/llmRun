@@ -355,3 +355,33 @@ def test_estimate_cost_usd_computes_from_pinned_rates() -> None:
 def test_estimate_cost_usd_is_zero_for_zero_tokens() -> None:
     """No tokens spent means no estimated cost."""
     assert estimate_cost_usd(0, 0, 0, 0) == 0.0
+
+
+def test_different_system_instructions_produce_different_cache_entries(
+    tmp_path: Path,
+) -> None:
+    """Two `system_instructions` variants for the same record/question must not collide.
+
+    Guards the bug found reading this module ahead of the percentage-convention A/B: if the
+    cache key were still built from the module-level constant rather than the instance's own
+    `system_instructions`, both clients below would hash to the same cache file and the second
+    variant would silently replay the first variant's cached answer.
+    """
+    fake_a = _FakeAnthropic([_text_message("ANSWER: 1.0")])
+    fake_b = _FakeAnthropic([_text_message("ANSWER: 2.0")])
+    client_a = AnthropicClient(
+        fake_a, ResponseCache(cache_dir=tmp_path), system_instructions="Variant A."
+    )
+    client_b = AnthropicClient(
+        fake_b, ResponseCache(cache_dir=tmp_path), system_instructions="Variant B."
+    )
+    record = _make_record()
+
+    result_a = client_a.answer(record, 0)
+    result_b = client_b.answer(record, 0)
+
+    assert result_a == 1.0
+    assert result_b == 2.0
+    assert len(fake_a.messages.calls) == 1
+    assert len(fake_b.messages.calls) == 1
+    assert len(list(tmp_path.glob("*.json"))) == 2
