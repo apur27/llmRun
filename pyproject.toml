@@ -13,6 +13,7 @@ dependencies = [
   "ruff>=0.11.10",
   "mypy>=1.15.0",
   "pylit>=0.8.0",
+  "anthropic>=0.122.0",
 ]
 
 
@@ -30,6 +31,9 @@ main = "src.main:app"
 [tool.ruff]
 fix = true
 unsafe-fixes = false
+# dataset.md is out of scope for this run (assignment data/schema doc, not code) and
+# ruff format's markdown-embedded-code-block formatting would rewrite it.
+extend-exclude = ["dataset.md"]
 
 [tool.ruff.lint]
 select = [
@@ -78,3 +82,10 @@ strict = false
 warn_return_any = true
 plugins = ['pydantic.mypy']
 packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=4.0.1",
+]

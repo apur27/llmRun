@@ -49,6 +49,9 @@ uv run main chat <record_id>
 ```
 [![Chat](figures/chat_example.png)](figures/chat.png)  
 
+For running the eval and the gate, see "Running it" in `REPORT.md`. A keyless demo is also
+available — see the first item there.
+
 ## Submission 
 Please make a submission branch & make a PR to main. The PR should contain: 
 
