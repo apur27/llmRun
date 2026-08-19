@@ -2,6 +2,7 @@
 
 from src.adapters.stub_client import STUB_SENTINEL, StubClient
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
+from src.domain.scorer import SCALE_FLIP_FACTOR
 from src.services.turn_state import TurnState
 
 
@@ -46,7 +47,11 @@ def test_stub_client_returns_sentinel_for_yes_no_turn(
     assert client.answer(record, 1, empty_turn_state) == STUB_SENTINEL
 
 
-def test_stub_client_sentinel_is_never_a_float_or_yes_no() -> None:
-    """The sentinel itself can never be mistaken for a float or a yes/no string."""
-    assert not isinstance(STUB_SENTINEL, float)
-    assert STUB_SENTINEL not in {"yes", "no"}
+def test_stub_client_sentinel_is_a_float_far_outside_any_gold_magnitude() -> None:
+    """The sentinel is a float (so `TurnState` accepts it) but never matches a real gold value.
+
+    It is far enough outside any ConvFinQA magnitude, including after a scale-flip by
+    `SCALE_FLIP_FACTOR`, that it can never spuriously score correct.
+    """
+    assert isinstance(STUB_SENTINEL, float)
+    assert abs(STUB_SENTINEL) > 1e6 * SCALE_FLIP_FACTOR

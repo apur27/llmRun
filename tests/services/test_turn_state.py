@@ -4,6 +4,8 @@ Pure state accumulation, no I/O, no SDK — every assertion is about order and c
 turns held after a sequence of `add` calls.
 """
 
+import pytest
+
 from src.services.turn_state import Turn, TurnState
 
 
@@ -45,3 +47,13 @@ def test_turn_state_holds_a_string_answer_unchanged() -> None:
     state.add("is x greater than y?", "no")
 
     assert state.turns[0].answer == "no"
+
+
+def test_add_raises_value_error_on_a_malformed_answer() -> None:
+    """An answer that is neither a float nor 'yes'/'no' cannot enter `TurnState`."""
+    state = TurnState()
+
+    with pytest.raises(ValueError, match="answer must be a float"):
+        state.add("what is x?", "not a number")
+
+    assert state.turns == []

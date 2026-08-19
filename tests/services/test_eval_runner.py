@@ -13,7 +13,11 @@ from src.domain.results import TurnResult
 from src.services.eval_runner import TurnCountMismatchError, run_eval
 from src.services.turn_state import TurnState
 
-_WRONG_ANSWER = "__WRONG__"
+# A float wildly outside any gold magnitude in these fixtures -- never scores correct against a
+# numeric gold, and never matches a "yes"/"no" gold either (`score_turn` never coerces
+# float<->str). Must be a float, not an arbitrary string, so `TurnState.add` accepts it when
+# `run_eval` records it for a later turn.
+_WRONG_ANSWER = -999_999_999.0
 
 
 def _make_record(

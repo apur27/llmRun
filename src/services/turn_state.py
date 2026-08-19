@@ -38,5 +38,14 @@ class TurnState:
     turns: list[Turn] = field(default_factory=list)
 
     def add(self, question: str, answer: float | str) -> None:
-        """Append one more resolved turn: the question and the model's own predicted answer."""
+        """Append one more resolved turn: the question and the model's own predicted answer.
+
+        Raises `ValueError` if `answer` is neither a `float` nor exactly `"yes"`/`"no"` -- this
+        is an internal-invariant check, not a user-facing error to catch and recover from, since
+        every caller is expected to already hold a validated `float | str` prediction.
+        """
+        if not (isinstance(answer, float) or answer in ("yes", "no")):
+            raise ValueError(
+                f"TurnState.add: answer must be a float or 'yes'/'no', got {answer!r}"
+            )
         self.turns.append(Turn(question=question, answer=answer))
