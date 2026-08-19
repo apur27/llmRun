@@ -1,7 +1,5 @@
 # ConvFinQA Report
 
-*The headers here are guidelines, you can structure your report however you like.*
-
 ## Running it
 
 Three paths, in the order a reviewer with no key would want them.
@@ -289,8 +287,7 @@ numbers finalized against it — deliberately not done in this session (see Meth
 reasoning and the `--confirm-dev-run` guard). That run, a final polish pass, and the PR are the
 remaining steps, not additional design work.
 
-## [may not apply] If & how you've used coding assistants or gen AI tools to help with this assignment
-Please be honest.
+## AI-tool disclosure
 
 This was built with Claude Code, orchestrated by a small internal framework (RainMaker) that
 splits work into short, checked increments rather than one long generation. It's worth describing
@@ -305,15 +302,21 @@ What did **not** get delegated: the metric itself (the tolerance epsilon, the sc
 the train/dev split — all decided by me, frozen before any model call existed, and never handed to
 a model to choose); the plan and slice sequencing; and every checkpoint verification. No slice was
 marked done on a subagent's own report — the gate was independently re-run and the diff read
-before each commit, every time, across all 27 commits on this branch.
+before every commit, every time (count verifiable with `git rev-list --count
+main..rainmaker/20260819-0724-tomoro-task` — not restated here as a fixed number, since it grows
+before submission).
 
 **The controls, concretely.** A `PreToolUse` hook is a rule, not a prompt — it deterministically
 blocks specific dangerous commands (recursive force-deletes, history-rewriting git operations,
-pushes) rather than asking an agent nicely not to run them; it fired on me directly this session
-when I tried a `rm -rf` on a scratch directory mid-slice, and the block held. Each slice checkpoints
-as its own commit (occasionally two, when a follow-on fix surfaces immediately after), gate green
-before the next slice starts — 27 commits on this branch, none batched together. An independent
-reviewer role reads
+pushes) rather than asking an agent nicely not to run them. Two real instances, not hypothetical:
+attempting a recursive force-delete on a scratch directory mid-slice was denied outright
+(`BLOCKED: ... use targeted deletes, not recursive force. Ask the human if you truly need it.`) —
+I renamed the target instead of asking for an exception; and separately, the same guard's one-time
+soft-deadline stop fired during an earlier session's pause, denying the first write after the
+deadline until "the ledger state" was posted and scope was cut — enforcing planning discipline
+structurally, not just command safety. Each slice checkpoints as its own commit (occasionally two,
+when a follow-on fix surfaces immediately after), gate green before the next slice starts, none
+batched together. An independent reviewer role reads
 diffs and reports findings by severity; it never edits code and never grades its own work. A
 ledger (`slices.jsonl`) records every slice's planned and actual time, so drift is visible rather
 than asserted.
