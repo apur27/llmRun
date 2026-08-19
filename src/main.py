@@ -3,6 +3,7 @@ Main typer app for ConvFinQA
 """
 
 from pathlib import Path
+from typing import Optional
 
 import typer
 from dotenv import load_dotenv
@@ -105,22 +106,81 @@ def _build_client(client: str) -> ModelClient:
     )
 
 
+_VALID_SPLITS = {"train", "dev"}
+
+
+def _resolve_records(
+    dataset: dict[str, list[ConvFinQARecord]],
+    client: str,
+    split: str,
+    limit: int | None,
+    confirm_dev_run: bool,
+) -> list[ConvFinQARecord]:
+    """Validate `--split`/`--limit`/`--confirm-dev-run` and return the records to evaluate.
+
+    `dev` is measured once, at the end of the engagement (`plan.md`'s frozen METRIC
+    section) -- this is the one thing in the design that cannot be restored once spent, so
+    reaching it with the real client requires two things a default invocation, a reviewer,
+    or an accidental re-run would never happen to supply together: an explicit `--limit`
+    (real spend is never sized implicitly) and an explicit `--confirm-dev-run` (dev
+    specifically, not train, needs a second, separate opt-in). `--split` itself defaults to
+    `train` regardless of client, so the *default* invocation of this command can never
+    touch `dev` at all, real client or not.
+    """
+    if split not in _VALID_SPLITS:
+        raise typer.BadParameter(
+            f"unsupported --split {split!r}: choose 'train' or 'dev'"
+        )
+    if client == "anthropic":
+        if limit is None:
+            raise typer.BadParameter(
+                "--client anthropic requires --limit -- this bills real money, so a "
+                "sample size must be chosen explicitly, never implied by the full split."
+            )
+        if split == "dev" and not confirm_dev_run:
+            raise typer.BadParameter(
+                "--client anthropic --split dev also requires --confirm-dev-run -- dev "
+                "is measured once, at the end of the engagement; this flag exists so "
+                "that can never happen by accident or by a reviewer's default invocation."
+            )
+    records = dataset[split]
+    return records[:limit] if limit is not None else records
+
+
 @app.command()
 def eval(
     client: str = typer.Option(
         "stub", "--client", help="Model client to run against: 'stub' or 'anthropic'."
     ),
+    split: str = typer.Option(
+        "train",
+        "--split",
+        help="Dataset split to evaluate: 'train' (default) or 'dev'.",
+    ),
+    limit: Optional[int] = typer.Option(  # noqa: UP045 -- typer 0.12/click can't resolve `int | None`
+        None,
+        "--limit",
+        help="Evaluate only the first N records of the split. Required with "
+        "--client anthropic.",
+    ),
+    confirm_dev_run: bool = typer.Option(
+        False,
+        "--confirm-dev-run",
+        help="Required in addition to --limit when using --client anthropic --split dev.",
+    ),
 ) -> None:
-    """Run the eval loop over the dev split and print the headline accuracy.
+    """Run the eval loop over a split and print the headline accuracy.
 
     `--client stub` is a zero-cost pipeline smoke test (an always-wrong predictor).
     `--client anthropic` runs the real Anthropic API end to end and bills real money --
-    intended for a small, deliberately sized sample, not routinely against the full dev
-    split.
+    requires an explicit `--limit`, and `--split dev` additionally requires
+    `--confirm-dev-run`, since dev is measured once, at the end of the engagement, and
+    that cannot be undone once spent.
     """
-    model_client = _build_client(client)
     dataset = load_dataset(DATA_PATH)
-    summary = run_eval(dataset["dev"], model_client)
+    records = _resolve_records(dataset, client, split, limit, confirm_dev_run)
+    model_client = _build_client(client)
+    summary = run_eval(records, model_client)
 
     rich_print(f"total turns: {summary.total_turns}")
     rich_print(

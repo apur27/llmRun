@@ -21,12 +21,26 @@ REAL_RECORD_TURN_COUNT = 5
 
 
 def test_eval_stub_runs_end_to_end_over_the_real_dev_split() -> None:
-    """`eval --client stub` loads the real dev split and prints the zero-accuracy headline."""
-    result = runner.invoke(app, ["eval", "--client", "stub"])
+    """`eval --client stub --split dev` loads the real dev split, prints zero-accuracy.
+
+    `--split dev` is explicit here -- the command's default split is `train` (see the
+    dev-guard tests below), so reaching dev at all, even with the free stub client, now
+    requires saying so.
+    """
+    result = runner.invoke(app, ["eval", "--client", "stub", "--split", "dev"])
 
     assert result.exit_code == 0
     assert str(EXPECTED_TOTAL_TURN_COUNT) in result.stdout
     assert "0/1490" in result.stdout
+
+
+def test_eval_default_invocation_uses_train_not_dev() -> None:
+    """`eval --client stub` with no `--split` runs against train, never dev, by default."""
+    result = runner.invoke(app, ["eval", "--client", "stub"])
+
+    assert result.exit_code == 0
+    assert str(EXPECTED_TOTAL_TURN_COUNT) not in result.stdout
+    assert "0/1490" not in result.stdout
 
 
 def test_eval_rejects_an_unsupported_client() -> None:
@@ -34,6 +48,57 @@ def test_eval_rejects_an_unsupported_client() -> None:
     result = runner.invoke(app, ["eval", "--client", "bogus"])
 
     assert result.exit_code != 0
+
+
+def test_eval_default_invocation_cannot_reach_dev_with_the_real_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`eval --client anthropic` with no other flags is rejected before touching dev or spend.
+
+    Protects the one thing in the design that cannot be restored once lost: dev is
+    measured once, at the end of the engagement. A reviewer or an accidental re-run
+    invoking the documented `--client anthropic` flag alone -- no `--split`, no `--limit`,
+    no `--confirm-dev-run` -- must be refused, never silently default to a real, full,
+    billed run against the protected split. `AnthropicClient.from_env` is monkeypatched to
+    fail the test loudly if it is ever reached -- this must be rejected before any client
+    is built at all.
+    """
+    monkeypatch.setattr(
+        main_module.AnthropicClient,
+        "from_env",
+        classmethod(
+            lambda _cls: pytest.fail("AnthropicClient.from_env must not be reached")
+        ),
+    )
+
+    result = runner.invoke(app, ["eval", "--client", "anthropic"])
+
+    assert result.exit_code != 0
+    assert "--limit" in result.stdout
+
+
+def test_eval_client_anthropic_split_dev_without_confirm_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--client anthropic --split dev --limit N` alone is still rejected without confirmation.
+
+    `--limit` bounds spend but is not, by itself, permission to touch the protected split --
+    `--confirm-dev-run` is the second, separate opt-in this guards on.
+    """
+    monkeypatch.setattr(
+        main_module.AnthropicClient,
+        "from_env",
+        classmethod(
+            lambda _cls: pytest.fail("AnthropicClient.from_env must not be reached")
+        ),
+    )
+
+    result = runner.invoke(
+        app, ["eval", "--client", "anthropic", "--split", "dev", "--limit", "1"]
+    )
+
+    assert result.exit_code != 0
+    assert "--confirm-dev-run" in result.stdout
 
 
 class _FakeChatClient:
@@ -165,7 +230,11 @@ class _FakeAnthropicEvalClient:
 def test_eval_client_anthropic_constructs_the_real_client_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`--client anthropic` builds an `AnthropicClient`, not a silent fallback to stub."""
+    """`--client anthropic --limit N` (train, the default split) builds a real `AnthropicClient`.
+
+    `--limit` is required for `--client anthropic` (see the dev-guard tests above) -- this is
+    the smallest invocation that legitimately reaches client construction.
+    """
     built: dict[str, bool] = {}
 
     def _fake_from_env() -> _FakeAnthropicEvalClient:
@@ -178,7 +247,7 @@ def test_eval_client_anthropic_constructs_the_real_client_type(
         classmethod(lambda _cls: _fake_from_env()),
     )
 
-    result = runner.invoke(app, ["eval", "--client", "anthropic"])
+    result = runner.invoke(app, ["eval", "--client", "anthropic", "--limit", "1"])
 
     assert result.exit_code == 0
     assert built.get("called") is True
@@ -187,7 +256,11 @@ def test_eval_client_anthropic_constructs_the_real_client_type(
 def test_eval_client_anthropic_exits_cleanly_with_no_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`eval --client anthropic` with no key prints one message, never a traceback."""
+    """`eval --client anthropic --limit N` with no key prints one message, never a traceback.
+
+    `--limit` is included so this test actually reaches `from_env` (and exercises the
+    missing-key path it's named for) rather than failing earlier on the dev-guard check.
+    """
 
     def _raise() -> None:
         raise MissingApiKeyError("ANTHROPIC_API_KEY environment variable is not set")
@@ -196,7 +269,7 @@ def test_eval_client_anthropic_exits_cleanly_with_no_api_key(
         main_module.AnthropicClient, "from_env", classmethod(lambda _cls: _raise())
     )
 
-    result = runner.invoke(app, ["eval", "--client", "anthropic"])
+    result = runner.invoke(app, ["eval", "--client", "anthropic", "--limit", "1"])
 
     assert result.exit_code != 0
     assert "Traceback" not in result.stdout
