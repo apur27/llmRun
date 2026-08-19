@@ -289,11 +289,37 @@ remaining steps, not additional design work.
 
 ## AI-tool disclosure
 
-This was built with Claude Code, orchestrated by a small internal framework (RainMaker) that
-splits work into short, checked increments rather than one long generation. It's worth describing
-as an engineering process, not a disclaimer, because the process is itself evidence of how I use
-these tools — and because naming its limits honestly is more useful to a reviewer than a clean
-story would be.
+Built with Claude Code, driven by my own tooling for running coding agents against a deadline — a
+pre-tool-use guard, a work ledger, and per-increment checkpoints. That tooling and its artifacts
+(the ledger, the plan, the session notes referenced below) live in a separate private repository
+and are not part of this submission. It's worth describing as an engineering process, not a
+disclaimer, because the process is itself evidence of how I use these tools — and because naming
+its limits honestly is more useful to a reviewer than a clean story would be.
+
+**The count, verified against the ledger and this branch's own history, not recalled.** 27 slices
+across 3 sessions — 26 landed as commits, one (a domain-model attempt) reverted before any file
+was written, redone cleanly under the next slice number rather than silently dropped. 28 commits
+on this branch: one per slice, plus a small follow-on commit on the few slices where a fix
+surfaced immediately after landing (each noted individually, not folded invisibly into a later
+diff) — verifiable with `git rev-list --count main..HEAD` on this branch, not restated here as a
+fixed number since it grows before submission. The gate (`make check`) was independently re-run
+and green before every one of those commits, not trusted from a subagent's own report.
+
+**Three sessions, in an order that was itself a decision, not just a schedule.** Session 1 built
+the measurement apparatus — the loader, the program executor, the scorer, the tolerance policy —
+with zero planned API spend, so the metric could be frozen from the dataset's own gold values
+before any model output existed that a tolerance or a scale-flip rule could be quietly bent to
+accommodate. Session 2 built the agent and produced the first real numbers, deliberately against
+`train` only, `dev` left untouched — every design question the agent's actual behavior raised
+(does it route arithmetic to the calculator, does it recall a prior turn's answer, which
+percentage convention it defaults to) needed answering on data that could be re-spent, before
+`dev` — the split that cannot be re-measured once spent — was touched at all. Session 3 wrote this
+report from what `train` had already shown, and deliberately did not run `dev` yet: writing first
+and measuring after means the report was not adjusted around a number after seeing it, and the
+one `dev` run happens only once every sentence describing it is already fixed, so the reported
+number cannot go stale behind a later rewrite. The full slice-by-slice ledger — intent, the
+decision made (or "none — mechanical") per slice, planned vs. actual time — is in `PROCESS.md`;
+this branch's own commit history is the same claim in unmediated form.
 
 **What was delegated, and what wasn't.** Implementation of individual, pre-scoped slices — the
 program executor, the scorer, the Anthropic adapter, CLI wiring, the tests that go with each —
@@ -302,9 +328,7 @@ What did **not** get delegated: the metric itself (the tolerance epsilon, the sc
 the train/dev split — all decided by me, frozen before any model call existed, and never handed to
 a model to choose); the plan and slice sequencing; and every checkpoint verification. No slice was
 marked done on a subagent's own report — the gate was independently re-run and the diff read
-before every commit, every time (count verifiable with `git rev-list --count
-main..rainmaker/20260819-0724-tomoro-task` — not restated here as a fixed number, since it grows
-before submission).
+before every commit, every time. See "The count, verified" above for the exact figures.
 
 **The controls, concretely.** A `PreToolUse` hook is a rule, not a prompt — it deterministically
 blocks specific dangerous commands (recursive force-deletes, history-rewriting git operations,
