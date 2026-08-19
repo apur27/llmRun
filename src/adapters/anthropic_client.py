@@ -68,9 +68,8 @@ _SYSTEM_INSTRUCTIONS = (
     "You are answering a question about a financial document. Use the calculate tool for any "
     "arithmetic instead of computing it yourself. Finish your reply with exactly one line of "
     f"the form '{ANSWER_PREFIX} <value>', where <value> is a number or yes/no. When a computed "
-    "answer is a ratio produced by division, report it as the raw decimal ratio -- do not "
-    "multiply it by 100 to express it as a percentage unless the question explicitly asks for a "
-    "percentage."
+    "answer is a ratio produced by division, always report it as the raw decimal ratio -- never "
+    "multiply it by 100 to express it as a percentage, no matter how the question is phrased."
 )
 _REPAIR_INSTRUCTIONS = (
     f"Your last reply did not end with a line of the exact form '{ANSWER_PREFIX} <value>'. "

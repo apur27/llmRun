@@ -140,6 +140,29 @@ unless the `scale_flip` flag is inspected specifically. 352, not the raw 411-tur
 (0,1]` magnitude bucket, because 59 of those 411 turns have a non-`divide` top-level operation
 where the ambiguity cannot occur at all — counting them would overstate the exposure.
 
+**A third measured prompt decision: the raw-ratio instruction's own carve-out was wrong by
+construction, and removing it improved the measured result.** The system prompt's
+raw-ratio instruction (adopted above) originally read "...unless the question explicitly
+asks for a percentage" — a plausible-sounding exception that gold never actually honours:
+for a divide-derived ratio in `(0,1]`, `executed_answers` is the raw decimal even when the
+question says "percent change" (e.g. `Single_CME/2010/page_113.pdf-1` t1, *"what was the
+percent change?"* → gold `0.68381`, not `68.381`). Measured from dev gold alone, no model
+call: 369 of 1486 dev turns have a top-level `divide` with `abs(gold) ∈ (0,1]`; 206 of those
+(55.8%) contain "percent" or "%" in the question — every one of those triggers the carve-out
+and is wrong by construction under the old instruction, 13.9% of the full denominator. The
+carve-out was removed and re-measured with the identical paired design used above (same
+120-turn train sample, same seed, same scorer): tolerant-correct rose from 17.5% to **30.0%**
+and `scale_flip` fell from 9.2% to **0.0%** on this sample (N=120, b=16, c=1,
+McNemar exact p=0.000275 — significant). One regression is named rather than hidden:
+`Single_GS/2018/page_68.pdf-1` t4 went from correct to wrong under the unconditional
+instruction (gold `0.11873`, predicted `12.0`) — a question phrased around "percent" pulling
+the model toward percentage form despite being told not to, the exact risk of removing the
+carve-out, occurring once in 120. The decision to remove it does not rest on this measurement
+alone, though: the carve-out was already wrong by construction against gold, so the simpler,
+unconditional instruction would have been the correct call even had this experiment come back
+flat. Per-turn detail and the exact spend for this experiment are in the private process
+repository referenced in the AI-tool disclosure below, not in this repo.
+
 **Train and dev split by design, not by convention: iterate on train, report dev exactly once.**
 The dataset ships train (3037 records) and dev (421 records) with no third, held-out test split.
 The reflex under that constraint is to carve dev in half — an iteration set and a reported set,
@@ -186,6 +209,18 @@ distinguishes `wrong_value` from `parse_error`):
 
 At n=16, each cluster is roughly 6 percentage points wide; the two largest clusters are the two
 systematic conversations above, not nine independent occurrences spread across nine conversations.
+
+**Re-characterization, added after this sample was measured.** The two `scale_flip` failures
+above (and arguably the adjacent "scale-flip-shaped near-miss" row) were produced under an
+earlier system prompt whose raw-ratio instruction carried a conditional exception —
+"...unless the question explicitly asks for a percentage" — that a later measurement (see
+Method) found was wrong by construction against gold on 13.9% of the full denominator.
+Removing that exception, measured on a separate 120-turn paired sample, took `scale_flip`
+from 9.2% to 0.0% and tolerant-correct from 17.5% to 30.0% (p=0.000275). This sample's two
+`scale_flip` rows should be read as an instance of a now-identified, now-fixed prompt defect,
+not an inherent limit of the model or the calculator — though this specific 47-turn sample
+was not re-run under the corrected instruction, so the exact effect on *this* sample's own
+53.2%/66.0% headline is not directly measured, only inferred from the separate experiment.
 
 **Overall, on this sample**: strict 25/47 (53.2%), tolerant 31/47 (66.0%) — no turns excluded from
 the denominator (`run_eval` asserts the scored count matches the expected count or raises).

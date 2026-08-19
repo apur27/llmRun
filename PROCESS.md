@@ -87,9 +87,21 @@ this session deliberately hadn't taken yet.
 | 25 | report | `REPORT.md` Future Work + AI-tool disclosure. | none — reporting slice | 25 | 3 |
 | 26 | fix | `REPORT.md` pre-merge fixes: verify or remove a disclosure claim, strip template scaffolding. | The guard-denial claim was verified against a real transcript rather than removed under challenge; kept, with a second corroborated instance added. | 15 | 1 |
 
+## Session 4 — polish and submission (in progress)
+
+Not part of the "27 slices across 3 sessions" count in `REPORT.md`'s disclosure — that
+paragraph deliberately describes the three-session build arc (measure → agent → report) as
+designed. This table is the raw ledger and includes session 4's work for completeness.
+
+| n | type | intent | decision made | planned min | actual min |
+|---|---|---|---|---|---|
+| 27 | report | Expand the AI-tool disclosure with a verified count and session-ordering rationale; add this file; scrub the internal tool's name from both. | none — reporting/documentation slice | 25 | 4 |
+| 28 | measurement | Remove `_SYSTEM_INSTRUCTIONS`'s conditional percentage carve-out (proven wrong against gold on 13.9% of dev's denominator) and re-run the slice-14 paired A/B (N=120, same seed/candidates/scorer) to confirm before landing the change. | Carve-out removed unconditionally; measured improvement (17.5%→30.0% tolerant-correct, scale_flip 9.2%→0%, N=120 b=16 c=1 p=0.000275) confirms a decision already required by gold consistency alone. | not pre-planned (user-initiated mid-session) | 11 |
+
 ## Totals
 
-27 ledger rows (26 landed as commits, 1 reverted before any file existed), 3 sessions,
-28 commits on the working branch (a few slices produced a small follow-on commit for a
-fix surfaced immediately after landing — noted individually in the ledger's own result
-text, not hidden inside a single commit's diff).
+29 ledger rows across this and the prior three sessions (26 landed as commits + 1 reverted
+in sessions 1–3, plus 2 more in session 4), 3+1 sessions, 29 commits on the working branch
+as of this slice (a few slices produced a small follow-on commit for a fix surfaced
+immediately after landing — noted individually in the ledger's own result text, not hidden
+inside a single commit's diff) — verifiable with `git rev-list --count main..HEAD`.
