@@ -2,16 +2,17 @@
 
 Depends on the `ModelClient` port from `src/adapters/ports.py`, never a concrete client class —
 `src/services` must be able to run against a stub, a fixture, or a real API client
-interchangeably. Returns an aggregate summary only (total/strict/tolerant counts and
-accuracies); the full per-turn results artifact with outcome/reason detail is a later slice's
-job, not this one's.
+interchangeably. Returns an aggregate summary (total/strict/tolerant counts and accuracies) plus
+the minimal per-turn `TurnResult` list; the full stratified error-analysis artifact reads off
+those records at read-time in a later session, not here.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.adapters.ports import ModelClient
 from src.domain.models import ConvFinQARecord
-from src.domain.scorer import score_turn
+from src.domain.results import Outcome, Reason, TurnResult
+from src.domain.scorer import ScoreResult, score_turn
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class EvalSummary:
     tolerant_correct: int
     strict_accuracy: float
     tolerant_accuracy: float
+    turn_results: list[TurnResult] = field(default_factory=list)
 
 
 class TurnCountMismatchError(Exception):
@@ -49,9 +51,10 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
     strict_correct = 0
     tolerant_correct = 0
     scored_total = 0
+    turn_results: list[TurnResult] = []
     for record in records:
         turns = zip(record.dialogue.turn_program, record.dialogue.executed_answers)
-        for turn_index, (_, gold) in enumerate(turns):
+        for turn_index, (turn_program, gold) in enumerate(turns):
             predicted = client.answer(record, turn_index)
             result = score_turn(predicted, gold)
             scored_total += 1
@@ -59,6 +62,11 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
                 strict_correct += 1
             if result.tolerant_correct:
                 tolerant_correct += 1
+            turn_results.append(
+                _build_turn_result(
+                    record.id, turn_index, turn_program, gold, predicted, result
+                )
+            )
 
     if scored_total != expected_total:
         raise TurnCountMismatchError(
@@ -72,4 +80,34 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
         tolerant_correct=tolerant_correct,
         strict_accuracy=strict_correct / scored_total if scored_total else 0.0,
         tolerant_accuracy=tolerant_correct / scored_total if scored_total else 0.0,
+        turn_results=turn_results,
+    )
+
+
+def _build_turn_result(
+    record_id: str,
+    turn_index: int,
+    turn_program: str,
+    gold: float | str,
+    predicted: float | str,
+    result: ScoreResult,
+) -> TurnResult:
+    """Build one `TurnResult` from a scored turn, per the frozen `outcome`/`reason` mapping.
+
+    `outcome` is `"correct"` exactly when `result.tolerant_correct` is `True` — the frozen
+    tolerant criterion is what "correct" means for the headline. `reason` is `"ok"` for a
+    correct turn and `"wrong_value"` for any incorrect one; the richer reason taxonomy needs a
+    real model client and is not derivable here.
+    """
+    outcome: Outcome = "correct" if result.tolerant_correct else "incorrect"
+    reason: Reason = "ok" if result.tolerant_correct else "wrong_value"
+    return TurnResult(
+        record_id=record_id,
+        turn_index=turn_index,
+        turn_program=turn_program,
+        gold=gold,
+        predicted=predicted,
+        outcome=outcome,
+        reason=reason,
+        scale_flip=result.scale_flip,
     )

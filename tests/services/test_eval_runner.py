@@ -8,6 +8,7 @@ counts and accuracies can be checked against a hand-computed expectation.
 import pytest
 
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
+from src.domain.results import TurnResult
 from src.services.eval_runner import TurnCountMismatchError, run_eval
 
 _WRONG_ANSWER = "__WRONG__"
@@ -109,6 +110,36 @@ def test_run_eval_with_mixed_client_counts_partial_correctness() -> None:
     assert summary.tolerant_correct == 2
     assert summary.strict_accuracy == 0.5
     assert summary.tolerant_accuracy == 0.5
+
+
+def test_run_eval_populates_turn_results_matching_expected_per_turn_records() -> None:
+    """`run_eval`'s summary carries one `TurnResult` per turn, matching hand-computed fields."""
+    records = [_make_record(["1.0", "greater(1, 0)"], [1.0, "yes"])]
+
+    summary = run_eval(records, _FirstTurnCorrectClient())
+
+    assert summary.turn_results == [
+        TurnResult(
+            record_id="Single_TEST/2020/page_1.pdf-1",
+            turn_index=0,
+            turn_program="1.0",
+            gold=1.0,
+            predicted=1.0,
+            outcome="correct",
+            reason="ok",
+            scale_flip=False,
+        ),
+        TurnResult(
+            record_id="Single_TEST/2020/page_1.pdf-1",
+            turn_index=1,
+            turn_program="greater(1, 0)",
+            gold="yes",
+            predicted=_WRONG_ANSWER,
+            outcome="incorrect",
+            reason="wrong_value",
+            scale_flip=False,
+        ),
+    ]
 
 
 def test_run_eval_raises_on_turn_count_mismatch() -> None:
