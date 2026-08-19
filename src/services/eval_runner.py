@@ -18,7 +18,14 @@ from src.domain.scorer import ScoreResult, score_turn
 
 @dataclass(frozen=True)
 class EvalSummary:
-    """Aggregate counts and accuracies from running the eval loop over a set of records."""
+    """Aggregate counts and accuracies from running the eval loop over a set of records.
+
+    Carries raw cumulative token counts only, never a dollar estimate — converting tokens to
+    cost needs the calling client's pinned per-token rates, which are adapter-specific (vendor
+    pricing), so that conversion is the caller's job (e.g. `estimate_cost_usd` in
+    `src/adapters/anthropic_client.py`), not this module's. Keeps `src/services` depending on
+    the `ModelClient` port only, never a concrete adapter symbol.
+    """
 
     total_turns: int
     strict_correct: int
@@ -26,6 +33,10 @@ class EvalSummary:
     strict_accuracy: float
     tolerant_accuracy: float
     turn_results: list[TurnResult] = field(default_factory=list)
+    cumulative_input_tokens: int = 0
+    cumulative_output_tokens: int = 0
+    cumulative_cache_creation_tokens: int = 0
+    cumulative_cache_read_tokens: int = 0
 
 
 class TurnCountMismatchError(Exception):
@@ -81,6 +92,9 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
             "(turn_program/executed_answers length mismatch)"
         )
 
+    input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens = (
+        _read_cumulative_usage(client)
+    )
     return EvalSummary(
         total_turns=scored_total,
         strict_correct=strict_correct,
@@ -88,6 +102,25 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
         strict_accuracy=strict_correct / scored_total if scored_total else 0.0,
         tolerant_accuracy=tolerant_correct / scored_total if scored_total else 0.0,
         turn_results=turn_results,
+        cumulative_input_tokens=input_tokens,
+        cumulative_output_tokens=output_tokens,
+        cumulative_cache_creation_tokens=cache_creation_tokens,
+        cumulative_cache_read_tokens=cache_read_tokens,
+    )
+
+
+def _read_cumulative_usage(client: ModelClient) -> tuple[int, int, int, int]:
+    """Read `client`'s cumulative usage attributes, defaulting to 0 when a client lacks them.
+
+    `ModelClient` (the port) declares only `answer` — usage accounting is specific to real API
+    clients, not every implementation of the port, so a stub or fixture client with no usage
+    attributes reads as zero rather than requiring the Protocol itself to carry these fields.
+    """
+    return (
+        getattr(client, "cumulative_input_tokens", 0),
+        getattr(client, "cumulative_output_tokens", 0),
+        getattr(client, "cumulative_cache_creation_tokens", 0),
+        getattr(client, "cumulative_cache_read_tokens", 0),
     )
 
 

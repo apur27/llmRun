@@ -171,6 +171,52 @@ def test_run_eval_catches_program_execution_error_as_parse_error() -> None:
     assert failed_turn.predicted is None
 
 
+class _UsageTrackingClient:
+    """Fake client exposing cumulative usage attributes, matching `AnthropicClient`'s shape."""
+
+    def __init__(self) -> None:
+        """Set fixed, non-zero cumulative usage as if calls had already been made."""
+        self.cumulative_input_tokens = 300
+        self.cumulative_output_tokens = 40
+        self.cumulative_cache_creation_tokens = 500
+        self.cumulative_cache_read_tokens = 1000
+
+    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+        """Return the gold answer for `turn_index`, always scoring correct."""
+        return record.dialogue.executed_answers[turn_index]
+
+
+def test_run_eval_puts_cumulative_usage_on_summary() -> None:
+    """`run_eval` reads the client's cumulative usage after the loop and puts it on the summary.
+
+    Dollar cost is deliberately not asserted here — converting these token counts to cost is
+    `estimate_cost_usd`'s job in `src/adapters/anthropic_client.py`, exercised by that module's
+    own tests, not `EvalSummary`'s.
+    """
+    records = [_make_record(["1.0"], [1.0])]
+
+    summary = run_eval(records, _UsageTrackingClient())
+
+    assert summary.cumulative_input_tokens == 300
+    assert summary.cumulative_output_tokens == 40
+    assert summary.cumulative_cache_creation_tokens == 500
+    assert summary.cumulative_cache_read_tokens == 1000
+
+
+def test_run_eval_defaults_usage_to_zero_for_a_client_without_usage_attributes() -> (
+    None
+):
+    """A client with no cumulative usage attributes (e.g. `StubClient`) scores zero usage."""
+    records = [_make_record(["1.0"], [1.0])]
+
+    summary = run_eval(records, _AlwaysCorrectClient())
+
+    assert summary.cumulative_input_tokens == 0
+    assert summary.cumulative_output_tokens == 0
+    assert summary.cumulative_cache_creation_tokens == 0
+    assert summary.cumulative_cache_read_tokens == 0
+
+
 def test_run_eval_raises_on_turn_count_mismatch() -> None:
     """A record whose `executed_answers` is shorter than its `turn_program` raises, not shrinks.
 

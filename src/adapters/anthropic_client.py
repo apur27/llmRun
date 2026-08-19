@@ -24,6 +24,7 @@ from anthropic.types import (
     TextBlockParam,
     ToolParam,
     ToolUseBlock,
+    Usage,
 )
 from rich import print as rich_print
 
@@ -31,11 +32,30 @@ from src.adapters.response_cache import ResponseCache
 from src.domain.executor import ProgramExecutionError, execute_program
 from src.domain.models import ConvFinQARecord
 
+# Kept for session 2: arithmetic is fully externalised to the `calculate` tool, so the model's
+# job is extraction/routing + turn-state recall, not multi-step derivation. Slice 12 validated
+# routing+recall at 3/3 real conversations on this model; the two misses were a scale-form
+# convention issue and one refusal, not an arithmetic-capability gap.
 MODEL = "claude-haiku-4-5-20251001"
 TEMPERATURE = 0.0
 MAX_TOKENS = 1024
 MAX_TOOL_ITERATIONS = 5
 ANSWER_PREFIX = "ANSWER:"
+
+_USD_PER_MILLION_TOKENS = 1_000_000
+
+# Rate assumption, not measured — Anthropic's published per-token price for
+# claude-haiku-4-5-20251001 as of Aug 2026: $1.00 / MTok input, $5.00 / MTok output.
+# Not fetched live this slice; flagged for a source check against the current pricing page
+# before being treated as billing-accurate.
+INPUT_TOKEN_RATE_USD = 1.00 / _USD_PER_MILLION_TOKENS
+OUTPUT_TOKEN_RATE_USD = 5.00 / _USD_PER_MILLION_TOKENS
+# Rate assumption, not measured — Anthropic's standard prompt-caching discount, consistent
+# across models: a cache read is billed at 10% of the base input rate, a cache write
+# (creation) at 1.25x the base input rate for the default 5-minute TTL. Same source-check
+# caveat as above; folding a cache-read token into plain input tokens would overstate cost.
+CACHE_READ_TOKEN_RATE_USD = INPUT_TOKEN_RATE_USD * 0.1
+CACHE_CREATION_TOKEN_RATE_USD = INPUT_TOKEN_RATE_USD * 1.25
 
 _API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
 _YES_NO_VALUES = {"yes", "no"}
@@ -86,6 +106,30 @@ class AnthropicClient:
         """Wrap an already-constructed SDK client and response cache — both injected, not built here."""
         self._client = client
         self._cache = cache
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cache_creation_tokens = 0
+        self._cache_read_tokens = 0
+
+    @property
+    def cumulative_input_tokens(self) -> int:
+        """Total input tokens billed across every real `messages.create` call this instance made."""
+        return self._input_tokens
+
+    @property
+    def cumulative_output_tokens(self) -> int:
+        """Total output tokens billed across every real `messages.create` call this instance made."""
+        return self._output_tokens
+
+    @property
+    def cumulative_cache_creation_tokens(self) -> int:
+        """Total prompt-cache-write tokens billed across every real call this instance made."""
+        return self._cache_creation_tokens
+
+    @property
+    def cumulative_cache_read_tokens(self) -> int:
+        """Total prompt-cache-read tokens billed across every real call this instance made."""
+        return self._cache_read_tokens
 
     @classmethod
     def from_env(cls, cache: ResponseCache | None = None) -> "AnthropicClient":
@@ -155,6 +199,7 @@ class AnthropicClient:
                 tools=[CALCULATE_TOOL],
                 messages=messages,
             )
+            self._accumulate_usage(response.usage)
             messages.append(
                 {"role": "assistant", "content": response.model_dump()["content"]}
             )
@@ -166,6 +211,38 @@ class AnthropicClient:
         raise ProgramExecutionError(
             f"tool-call iteration cap ({MAX_TOOL_ITERATIONS}) reached without a final answer"
         )
+
+    def _accumulate_usage(self, usage: Usage) -> None:
+        """Add one API call's `response.usage` onto this instance's running totals.
+
+        `cache_creation_input_tokens`/`cache_read_input_tokens` are `None` on the SDK's `Usage`
+        type when prompt caching did not apply to that call, so each is coalesced to 0 rather
+        than accumulated as `None`.
+        """
+        self._input_tokens += usage.input_tokens
+        self._output_tokens += usage.output_tokens
+        self._cache_creation_tokens += usage.cache_creation_input_tokens or 0
+        self._cache_read_tokens += usage.cache_read_input_tokens or 0
+
+
+def estimate_cost_usd(
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int,
+    cache_read_tokens: int,
+) -> float:
+    """Estimate USD cost from token counts and this module's pinned per-token rate constants.
+
+    Pure and provider-specific: lives beside the rate constants it reads rather than in
+    `src/services`, per the layer rule that pricing knowledge for one vendor is adapter-shaped,
+    not a domain or use-case concern.
+    """
+    return (
+        input_tokens * INPUT_TOKEN_RATE_USD
+        + output_tokens * OUTPUT_TOKEN_RATE_USD
+        + cache_creation_tokens * CACHE_CREATION_TOKEN_RATE_USD
+        + cache_read_tokens * CACHE_READ_TOKEN_RATE_USD
+    )
 
 
 def _system_blocks(record: ConvFinQARecord) -> list[TextBlockParam]:

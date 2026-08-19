@@ -14,7 +14,14 @@ from typing import Any
 import pytest
 from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
 
-from src.adapters.anthropic_client import AnthropicClient, MissingApiKeyError
+from src.adapters.anthropic_client import (
+    CACHE_READ_TOKEN_RATE_USD,
+    INPUT_TOKEN_RATE_USD,
+    OUTPUT_TOKEN_RATE_USD,
+    AnthropicClient,
+    MissingApiKeyError,
+    estimate_cost_usd,
+)
 from src.adapters.response_cache import ResponseCache
 from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
@@ -43,7 +50,7 @@ def _make_record(question: str = "what is the value?") -> ConvFinQARecord:
     )
 
 
-def _text_message(text: str) -> Message:
+def _text_message(text: str, usage: Usage = _USAGE) -> Message:
     """A final `end_turn` message carrying one text block."""
     return Message(
         id="msg",
@@ -53,12 +60,16 @@ def _text_message(text: str) -> Message:
         stop_reason="end_turn",
         stop_sequence=None,
         type="message",
-        usage=_USAGE,
+        usage=usage,
     )
 
 
 def _tool_use_message(
-    tool_use_id: str, operation: str, first: float, second: float
+    tool_use_id: str,
+    operation: str,
+    first: float,
+    second: float,
+    usage: Usage = _USAGE,
 ) -> Message:
     """A `tool_use` message calling `calculate` once."""
     return Message(
@@ -76,7 +87,7 @@ def _tool_use_message(
         stop_reason="tool_use",
         stop_sequence=None,
         type="message",
-        usage=_USAGE,
+        usage=usage,
     )
 
 
@@ -234,3 +245,113 @@ def test_answer_uses_the_response_cache_on_a_repeat_prompt(tmp_path: Path) -> No
 
     assert first == second == 7.0
     assert len(client._client.messages.calls) == 1  # type: ignore[attr-defined]
+
+
+def test_new_client_has_zero_cumulative_usage(tmp_path: Path) -> None:
+    """A freshly built client reports zero cumulative usage before any call is made."""
+    client = _client_with([], tmp_path)
+
+    assert client.cumulative_input_tokens == 0
+    assert client.cumulative_output_tokens == 0
+    assert client.cumulative_cache_creation_tokens == 0
+    assert client.cumulative_cache_read_tokens == 0
+
+
+def test_answer_accumulates_input_and_output_tokens_from_response_usage(
+    tmp_path: Path,
+) -> None:
+    """One real call's `response.usage` is added onto the client's cumulative totals."""
+    usage = Usage(input_tokens=100, output_tokens=20)
+    client = _client_with([_text_message("ANSWER: 1.0", usage=usage)], tmp_path)
+
+    client.answer(_make_record(), 0)
+
+    assert client.cumulative_input_tokens == 100
+    assert client.cumulative_output_tokens == 20
+
+
+def test_answer_accumulates_usage_across_multiple_answer_calls(
+    tmp_path: Path,
+) -> None:
+    """Two separate `answer()` calls (distinct prompts) sum their usage, not overwrite it."""
+    client = _client_with(
+        [
+            _text_message("ANSWER: 1.0", usage=Usage(input_tokens=10, output_tokens=1)),
+            _text_message("ANSWER: 2.0", usage=Usage(input_tokens=30, output_tokens=2)),
+        ],
+        tmp_path,
+    )
+
+    client.answer(_make_record("first question?"), 0)
+    client.answer(_make_record("second question?"), 0)
+
+    assert client.cumulative_input_tokens == 40
+    assert client.cumulative_output_tokens == 3
+
+
+def test_answer_accumulates_usage_across_tool_loop_iterations(tmp_path: Path) -> None:
+    """A single `answer()` spanning two tool-loop iterations sums usage from both calls."""
+    client = _client_with(
+        [
+            _tool_use_message(
+                "tu1", "add", 2, 3, usage=Usage(input_tokens=50, output_tokens=5)
+            ),
+            _text_message("ANSWER: 5.0", usage=Usage(input_tokens=60, output_tokens=8)),
+        ],
+        tmp_path,
+    )
+
+    client.answer(_make_record(), 0)
+
+    assert client.cumulative_input_tokens == 110
+    assert client.cumulative_output_tokens == 13
+
+
+def test_answer_accumulates_cache_creation_and_read_tokens_when_present(
+    tmp_path: Path,
+) -> None:
+    """`cache_creation_input_tokens`/`cache_read_input_tokens` accumulate when the SDK sets them."""
+    usage = Usage(
+        input_tokens=10,
+        output_tokens=1,
+        cache_creation_input_tokens=500,
+        cache_read_input_tokens=200,
+    )
+    client = _client_with([_text_message("ANSWER: 1.0", usage=usage)], tmp_path)
+
+    client.answer(_make_record(), 0)
+
+    assert client.cumulative_cache_creation_tokens == 500
+    assert client.cumulative_cache_read_tokens == 200
+
+
+def test_answer_treats_absent_cache_fields_as_zero_not_none(tmp_path: Path) -> None:
+    """`Usage` with no cache fields set (plain `_USAGE`) accumulates zero, never `None`."""
+    client = _client_with([_text_message("ANSWER: 1.0")], tmp_path)
+
+    client.answer(_make_record(), 0)
+
+    assert client.cumulative_cache_creation_tokens == 0
+    assert client.cumulative_cache_read_tokens == 0
+
+
+def test_estimate_cost_usd_computes_from_pinned_rates() -> None:
+    """`estimate_cost_usd` multiplies each token count by its own pinned rate and sums them."""
+    cost = estimate_cost_usd(
+        input_tokens=1000,
+        output_tokens=100,
+        cache_creation_tokens=0,
+        cache_read_tokens=2000,
+    )
+
+    expected = (
+        1000 * INPUT_TOKEN_RATE_USD
+        + 100 * OUTPUT_TOKEN_RATE_USD
+        + 2000 * CACHE_READ_TOKEN_RATE_USD
+    )
+    assert cost == pytest.approx(expected)
+
+
+def test_estimate_cost_usd_is_zero_for_zero_tokens() -> None:
+    """No tokens spent means no estimated cost."""
+    assert estimate_cost_usd(0, 0, 0, 0) == 0.0
