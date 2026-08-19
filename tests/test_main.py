@@ -205,6 +205,52 @@ def test_chat_exits_cleanly_with_no_api_key(monkeypatch: pytest.MonkeyPatch) -> 
     assert "MissingApiKeyError" not in result.stdout
 
 
+FIXTURE_RECORD_ID = "Single_SLG/2013/page_133.pdf-4"
+FIXTURE_RECORD_TURN_COUNT = 4
+
+
+def test_chat_client_fixture_walks_all_turns_with_real_recorded_answers() -> None:
+    """`chat --client fixture` replays real recorded answers with no key or network.
+
+    Deliberately does not monkeypatch `AnthropicClient.from_env` -- if `--client fixture`
+    is wired correctly, that path is never touched.
+    """
+    result = runner.invoke(
+        app,
+        ["chat", FIXTURE_RECORD_ID, "--client", "fixture"],
+        input="\n" * FIXTURE_RECORD_TURN_COUNT,
+    )
+
+    assert result.exit_code == 0
+    for expected_value in ("4.5", "4.1", "8.6", "12.0"):
+        assert expected_value in result.stdout
+
+
+def test_chat_client_fixture_unknown_record_names_available_fixtures() -> None:
+    """A real record id absent from the fixture file exits clean, naming what is available.
+
+    `REAL_RECORD_ID` exists in the dataset (so `_find_record` succeeds) but has no entry
+    in `data/reviewer_demo_fixtures.json` -- this exercises `FixtureMissError`, not the
+    unknown-record-id path (already covered by `test_chat_exits_cleanly_for_an_unknown_record_id`).
+    """
+    result = runner.invoke(
+        app,
+        ["chat", REAL_RECORD_ID, "--client", "fixture"],
+        input="\n",
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.stdout
+    assert FIXTURE_RECORD_ID in result.stdout
+
+
+def test_chat_rejects_an_unsupported_client() -> None:
+    """`chat --client bogus` fails clearly instead of silently pretending to run it."""
+    result = runner.invoke(app, ["chat", FIXTURE_RECORD_ID, "--client", "bogus"])
+
+    assert result.exit_code != 0
+
+
 class _RefusesSecondTurnClient:
     """A `ModelClient` that raises `ProgramExecutionError` on turn 1, answers otherwise."""
 

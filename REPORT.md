@@ -4,9 +4,23 @@
 
 ## Running it
 
-Two paths, depending on whether you have an `ANTHROPIC_API_KEY`.
+Three paths, in the order a reviewer with no key would want them.
 
-**No key — the real pipeline, a known-wrong predictor:**
+**1. No key — a real conversation, replayed:**
+
+```bash
+uv run main chat "Single_SLG/2013/page_133.pdf-4" --client fixture
+```
+
+No key, no network. This demonstrates the real questions, the real recorded answers (4 real
+values from an earlier real Anthropic call this project made), and the real `chat`/`TurnState`
+loop (`chat` calls `turn_state.add()` after every answer regardless of client) — but
+**`FixtureClient` is a flat `(record, turn_index)` lookup that ignores `turn_state` on replay
+(see its own docstring), so tool routing and the parse-repair path are not exercised by this
+demo**, only by the live `--client anthropic` path. What you're seeing is genuine recorded model
+output, displayed through the real interface, not a live call and not staged data.
+
+**2. No key — the real pipeline, a known-wrong predictor:**
 
 ```bash
 uv run main eval --client stub
@@ -18,7 +32,7 @@ Prints strict/tolerant accuracy (both `0.0`, by design) with their denominator. 
 harness proving itself, not a demo: `make eval-falsify` runs the same check as part of the gate.
 No network call is made.
 
-**With a key — a real conversation:**
+**3. With a key — a live conversation:**
 
 ```bash
 uv run main chat <record_id>

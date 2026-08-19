@@ -2,6 +2,7 @@
 Main typer app for ConvFinQA
 """
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,7 @@ from src.adapters.anthropic_client import (
     MissingApiKeyError,
     estimate_cost_usd,
 )
+from src.adapters.fixture_client import FixtureClient, FixtureMissError
 from src.adapters.ports import ModelClient
 from src.adapters.stub_client import StubClient
 from src.domain.executor import ProgramExecutionError
@@ -36,32 +38,41 @@ app = typer.Typer(
 )
 
 DATA_PATH = Path(__file__).parent.parent / "data" / "convfinqa_dataset.json"
+FIXTURES_DEMO_PATH = (
+    Path(__file__).parent.parent / "data" / "reviewer_demo_fixtures.json"
+)
 
 
 @app.command()
 def chat(
     record_id: str = typer.Argument(..., help="ID of the record to chat about"),
+    client: str = typer.Option(
+        "anthropic",
+        "--client",
+        help="Model client to run against: 'anthropic' (default, needs a real key) or "
+        "'fixture' (no key, no network -- replays real recorded answers offline).",
+    ),
 ) -> None:
-    """Walk one record's own questions, in order, against the real Anthropic client.
+    """Walk one record's own questions, in order, against the chosen client.
 
-    Not free-text chat: `AnthropicClient.answer()` is keyed to a record's own
+    Not free-text chat: the client's `answer()` is keyed to a record's own
     `conv_questions[turn_index]`, not arbitrary text, so this command asks each turn's
-    scripted question in order and prints the model's real answer -- press enter to see the
-    next turn, or type `exit`/`quit` to stop early. Each turn's (question, model's own
-    answer) is appended to a session `TurnState`, so a later turn's client sees prior history
-    exactly like `run_eval` does.
+    scripted question in order and prints the answer -- press enter to see the next turn,
+    or type `exit`/`quit` to stop early. Each turn's (question, answer) is appended to a
+    session `TurnState`, so a later turn's client sees prior history exactly like
+    `run_eval` does.
 
-    Fails clean, never a traceback: a missing `ANTHROPIC_API_KEY` (no ambient export, no
-    `.env`) or a turn the model cannot answer even after one repair attempt both print one
-    plain message and exit/continue rather than dumping a stack trace -- this is a reviewer's
-    first interaction with the submission and their README documents exactly this command.
+    `--client anthropic` (default) builds a real `AnthropicClient` from `ANTHROPIC_API_KEY`
+    and fails clean -- one line, no traceback -- if the key is missing. `--client fixture`
+    builds a `FixtureClient` over a committed file of real, previously recorded Anthropic
+    responses (`data/reviewer_demo_fixtures.json`) -- no key and no network touched at all,
+    so a reviewer with no credential can still see the real interface and real recorded
+    output. A `record_id` with no entry in the fixture file prints one clean message naming
+    the record ids that *are* available, rather than a traceback.
     """
     dataset = load_dataset(DATA_PATH)
     record = _find_record(dataset, record_id)
-    try:
-        client = AnthropicClient.from_env()
-    except MissingApiKeyError:
-        raise typer.Exit(code=1) from None
+    model_client = _build_chat_client(client)
     turn_state = TurnState()
     for turn_index, question in enumerate(record.dialogue.conv_questions):
         rich_print(f"[bold]turn {turn_index}:[/bold] {question}")
@@ -69,15 +80,49 @@ def chat(
         if command.strip().lower() in {"exit", "quit"}:
             return
         try:
-            answer = client.answer(record, turn_index, turn_state)
+            answer = model_client.answer(record, turn_index, turn_state)
         except ProgramExecutionError:
             rich_print(
                 "[yellow]could not get a parseable answer for this turn -- "
                 "skipping, not added to conversation history[/yellow]"
             )
             continue
+        except FixtureMissError:
+            _print_fixture_miss_message()
+            raise typer.Exit(code=1) from None
         rich_print(f"[blue][bold]assistant:[/bold] {answer}[/blue]")
         turn_state.add(question, answer)
+
+
+def _build_chat_client(client: str) -> ModelClient:
+    """Construct the `ModelClient` `chat` should use, or fail with a clear `BadParameter`.
+
+    Distinct from `_build_client` (used by `eval`): `chat` additionally offers a keyless
+    `fixture` path, and never offers `stub` (an always-wrong predictor has nothing useful
+    to show a reviewer talking to `chat`). A missing `ANTHROPIC_API_KEY` exits clean
+    (`from_env` already printed the one-line stderr message naming the variable) rather than
+    propagating a traceback.
+    """
+    if client == "anthropic":
+        try:
+            return AnthropicClient.from_env()
+        except MissingApiKeyError:
+            raise typer.Exit(code=1) from None
+    if client == "fixture":
+        return FixtureClient(FIXTURES_DEMO_PATH)
+    raise typer.BadParameter(
+        f"unsupported --client {client!r}: choose 'anthropic' or 'fixture'"
+    )
+
+
+def _print_fixture_miss_message() -> None:
+    """Print a clean, no-traceback message naming which record ids the fixture file covers."""
+    raw: dict[str, float | str] = json.loads(FIXTURES_DEMO_PATH.read_text())
+    available_record_ids = sorted({key.rsplit(":", 1)[0] for key in raw})
+    rich_print(
+        "[red]no recorded fixture answer for this record/turn -- available fixture "
+        f"record ids: {', '.join(available_record_ids)}[/red]"
+    )
 
 
 def _find_record(
