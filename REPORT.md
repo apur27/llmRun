@@ -61,6 +61,26 @@ own `executed_answers` and `turn_program` fields, zero API spend, zero model in 
 decisions below, each with what was chosen, what the alternatives were, what the data said, and
 what the choice costs.
 
+One turn's path through the system, and the fact the epsilon defence below leans on: the same
+`execute_program` that resolves every live `calculate` tool call is also what the 1490-point gold
+replay runs (`tests/domain/test_gold_replay.py` imports and calls it directly) — arithmetic never
+happens twice, in two implementations that could quietly disagree.
+
+```mermaid
+flowchart LR
+    Q[Turn question] --> P[Build prompt]
+    TS[(TurnState<br/>prior answers)] --> P
+    P --> M[Model]
+    M -->|tool call| EX[execute_program]
+    EX -->|result| M
+    M --> A[Parsed answer]
+    A --> TS
+    A --> SC[score_turn]
+    G[(Gold<br/>executed_answers)] --> SC
+    SC --> R[(results artifact<br/>outcome + reason)]
+    EX -.same executor.-> GR[Gold replay<br/>1490/1490]
+```
+
 **The tolerance epsilon is 1e-3 relative error, and the number was measured, not picked by
 convention.** Recomputing every one of dev's 1486 numeric turns' `turn_program` with an executor
 independently proven correct (it reproduces gold on 1490/1490 turns under this same tolerance,
@@ -136,7 +156,77 @@ because there is nothing shared to leak through. Dev itself is measured exactly 
 of the engagement, behind an explicit `--confirm-dev-run` flag the CLI enforces — the split that
 cannot be re-measured once spent is treated as exactly that.
 ## Error Analysis
-Lorem ipsum dolor sit amet consectetur adipiscing elit
+
+**Sample and its limits, stated first.** Everything below is measured against a 47-turn,
+12-conversation stratified sample of `train` (session 2, slice 18) — not `dev`. `dev` is measured
+exactly once, at the end of the engagement (see Method), and has not been run as of this writing;
+this section is the best evidence available before that run, not a substitute for it. Every number
+below carries its own denominator and its own sample — treat any figure that doesn't as a defect
+in the report, not a smaller number worth omitting.
+
+**Two conversations account for 8 of the 16 incorrect turns (50%) — read the failure count as
+conversations, not turns.** `Single_AMT/2010/page_98.pdf-2` is 0/4 correct, wrong on every turn by
+a consistent ÷20 unit-scale error; `Single_PNC/2012/page_96.pdf-3` is 1/5 correct, correct only on
+its opening literal-lookup turn, then wrong on every subsequent derived turn via a subtraction
+computed in the reverse order from gold's sign convention. A per-turn tally reports 16 independent
+failures; the data underneath is narrower — two recurring, systematic errors that each happen to
+touch nearly every turn of their own conversation. Most write-ups of a number like this report
+failure *counts*; the distinction changes what "16 wrong turns" should be read to mean.
+
+Clustered by cause, all 16 read individually (not the machine `reason` field, which only
+distinguishes `wrong_value` from `parse_error`):
+
+| Root cause | Count | Share | Example (gold → predicted) |
+|---|---|---|---|
+| Sign/operand-order flip (subtraction in gold's reverse order) | 5 | 31% | `Single_PNC…-3` t2: `16.0 → -16.0` |
+| Unit/scale confusion — one conversation, all 4 turns off by a consistent ÷20 | 4 | 25% | `Single_AMT…-2` t0: `205.4 → 10.27` |
+| Scale-flip (×100 percentage form), flagged by the scorer | 2 | 12.5% | `Double_REGN…` t0: `0.13082 → 13.08` |
+| `parse_error` — no parseable answer after one repair attempt | 2 | 12.5% | `Double_AAL…` t1: `0.00406 → None` |
+| Scale-flip-shaped near-miss, just outside flip-detection tolerance | 1 | 6.25% | `Double_CE…` t2: `0.01176 → 1.18` |
+| Literal misread from the document (off-by-one table read) | 1 | 6.25% | `Double_CE…` t1: `85.0 → 86.0` |
+| Rounding-precision near-miss (0.21% relative error, just above the 0.1% tolerance) | 1 | 6.25% | `Single_PPG…-4` t1: `-0.02355 → -0.0235` |
+
+At n=16, each cluster is roughly 6 percentage points wide; the two largest clusters are the two
+systematic conversations above, not nine independent occurrences spread across nine conversations.
+
+**Overall, on this sample**: strict 25/47 (53.2%), tolerant 31/47 (66.0%) — no turns excluded from
+the denominator (`run_eval` asserts the scored count matches the expected count or raises).
+
+**The divide-only subset — n=11, and the confidence interval matters more than the point
+estimate.** Filtering to the frozen MOVES definition (top-level `divide`, `abs(gold) ∈ (0,1]`)
+gives 11 turns, tolerant accuracy 4/11 (36.4%). At n=11, each turn is 9 percentage points of the
+subset; a Wilson 95% confidence interval on 4/11 is approximately **15%–65%** (independently
+verified at 15.2%–64.6%). That is wide enough that 36.4% should be read as clearing a
+pre-registered falsification threshold — the prediction was that `TurnState` plus the winning
+percentage-form convention would move divide-turn accuracy from 17.5% toward a 56% ceiling, and it
+did move, 17.5%→36.4% — not as a precise magnitude. One sample at this size establishes a
+direction, not a number tight enough to stand alone against a baseline point estimate.
+
+**Against the paper's three claims (FinQA, Section 5.3) — confirmed, refuted, or untested, each
+stated on its own rather than assumed:**
+
+1. *"The model excels at number selection questions."* **Directionally consistent, not a clean
+   confirmation.** Only 1 of the 16 wrong turns (6.25%) is a pure literal/retrieval miss (the
+   table-read error above); the other 15 all require computation. This sample did not compute a
+   literal-vs-computed accuracy split across the full 47 turns — only the *failures'* composition
+   is known — so this is evidence from the shape of the errors, not a stratified accuracy
+   comparison. Worth computing properly against `dev`, where it's a free stratification (the
+   METRIC section already names it).
+2. *"Later turns... tend to be harder... due to longer reasoning dependencies."* **Untested by
+   this sample.** Turn indices are known for the 16 failures but were not systematically recorded
+   for the 31 correct turns in this spike, so no by-turn-index accuracy exists to confirm or
+   refute this claim here. Stated as a gap, not guessed at — `dev`'s own by-turn-index
+   stratification should answer it.
+3. *"If the prediction for any turn is wrong, then there is a very minor chance that the
+   subsequent turns are correct."* **Consistent with this sample's clustering, but the mechanism
+   isn't established.** Both systematic-error conversations show exactly this shape (AMT wrong
+   from turn 0 onward; PNC correct once, then wrong on every later turn) — but no tool-call
+   transcript was retained for these specific turns, so this sample cannot distinguish genuine
+   error propagation (a wrong answer recorded in `TurnState` being reused and compounding) from
+   two independently-recurring per-turn bugs (a consistent document misread, a consistent sign
+   convention) that happen to produce the same observable pattern. The correlation — 2 of 12
+   conversations, 50% of all misses — supports the claim; the causal mechanism the paper describes
+   is not confirmed by the data in hand.
 ## Future Work 
 Lorem ipsum dolor sit amet consectetur adipiscing elit
 ## [may not apply] If & how you've used coding assistants or gen AI tools to help with this assignment 
