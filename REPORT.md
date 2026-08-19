@@ -227,9 +227,144 @@ stated on its own rather than assumed:**
    convention) that happen to produce the same observable pattern. The correlation — 2 of 12
    conversations, 50% of all misses — supports the claim; the causal mechanism the paper describes
    is not confirmed by the data in hand.
-## Future Work 
-Lorem ipsum dolor sit amet consectetur adipiscing elit
-## [may not apply] If & how you've used coding assistants or gen AI tools to help with this assignment 
+## Limitations
+
+**`scale_flip` only detects `×100`/`÷100` confusion, not other unit-conversion errors.** A real
+case (JPM t0, slice 12's real-data investigation) had the model answer in millions where gold was
+in billions — a ×1000 error, invisible to the scorer's flip check, indistinguishable in the
+headline from any other wrong answer. Not extended this session: the 352-turn scale-flip exposure
+figure is a frozen metric decision, and widening the detector on a sample of one real occurrence
+would reopen that decision without evidence of how often the broader class actually recurs.
+
+**No automated check enforces the module layering, and that gap produced a real, uncaught
+defect.** `import-linter` (or equivalent) was considered and declined early in the engagement for
+budget (`plan.md`, the GATE section) — nothing in `make check` verifies that `src/services` never
+imports a concrete `src/adapters` class. That gap is not hypothetical: `eval_falsify_check.py`
+imported `StubClient` directly, the exact defect class the declined control exists to catch, and
+it went unnoticed until found by hand while writing this section, not by review or the gate. The
+one found instance is fixed (see the AI-tool disclosure below); the gap itself — nothing prevents
+a second instance in the next slice anyone writes — remains, and adding the control is named in
+Future Work with its own cost, not folded into this fix.
+
+## Future Work
+
+Each cut below was a decision, made with a stated reason, not something the timeline forced
+silently.
+
+**Out of scope for this engagement, by design:** retrieval or a vector store (each record ships
+its own document — retrieving across documents isn't the problem this dataset poses, and building
+one would be the most common way to over-build this task); fine-tuning; DSL program synthesis
+(closed explicitly — tool-calling with an explicit calculator is the different lane the brief
+asked for); multi-agent orchestration; a web interface; a second model provider; persistence
+between processes; Repository/Unit-of-Work/message-bus/CQRS patterns (no database, no concurrency
+— applying them here would be a scope error, not sophistication).
+
+**Named gaps, not silently dropped:**
+- `scale_flip` only detects `×100`/`÷100` confusion, not other unit-conversion errors (a real
+  ×1000 case was observed once, JPM t0 in slice 12's investigation, and is *not* caught). Not
+  extended this session — the 352-turn exposure figure is a frozen metric decision, and widening
+  the detector on a sample of one would reopen it without real evidence of how often it recurs.
+  Worth measuring properly on `dev`.
+- `eval_runner._read_cumulative_usage` duck-types `cumulative_*_tokens` attributes that exist on
+  `AnthropicClient` but aren't declared on the `ModelClient` Protocol — harmless with the two
+  clients that exist today, but silently reports zero cost for a future client that doesn't
+  happen to match that undeclared shape.
+- The by-turn-index and literal-vs-computed accuracy stratifications (both free, from fields
+  already in the data, per the frozen METRIC section) were not computed this session — only the
+  47-turn train sample's failure composition was read manually. Both are the natural next
+  measurement, on `dev`.
+- Add `import-linter` (or equivalent) to enforce the `cli → adapters → services → domain`
+  dependency direction in the gate — see Limitations for why this matters, not just in theory.
+  Not added this session: it's a bigger call than the one violation it would have caught justifies
+  this late — configuring the contract, running it against the whole tree, and fixing whatever
+  else it surfaces (unknown until run) is real, uncosted work, distinct from the few-line fix that
+  closed the one known instance.
+- `FixtureClient`'s reviewer-facing fixture set covers one conversation. Extending it to a few
+  more (one per turn-count bucket) would make the keyless demo more representative; not done here
+  because one clean example already demonstrates the mechanism, and each additional one is a real
+  recorded conversation, not free data.
+
+**What's left before submission**: the `dev` split, measured exactly once, and the report's
+numbers finalized against it — deliberately not done in this session (see Method's split
+reasoning and the `--confirm-dev-run` guard). That run, a final polish pass, and the PR are the
+remaining steps, not additional design work.
+
+## [may not apply] If & how you've used coding assistants or gen AI tools to help with this assignment
 Please be honest.
 
-Lorem ipsum dolor sit amet consectetur adipiscing elit
+This was built with Claude Code, orchestrated by a small internal framework (RainMaker) that
+splits work into short, checked increments rather than one long generation. It's worth describing
+as an engineering process, not a disclaimer, because the process is itself evidence of how I use
+these tools — and because naming its limits honestly is more useful to a reviewer than a clean
+story would be.
+
+**What was delegated, and what wasn't.** Implementation of individual, pre-scoped slices — the
+program executor, the scorer, the Anthropic adapter, CLI wiring, the tests that go with each —
+went to a subagent per slice, given an intent, a file list, and a check command, nothing more.
+What did **not** get delegated: the metric itself (the tolerance epsilon, the scale-flip decision,
+the train/dev split — all decided by me, frozen before any model call existed, and never handed to
+a model to choose); the plan and slice sequencing; and every checkpoint verification. No slice was
+marked done on a subagent's own report — the gate was independently re-run and the diff read
+before each commit, every time, across all 27 commits on this branch.
+
+**The controls, concretely.** A `PreToolUse` hook is a rule, not a prompt — it deterministically
+blocks specific dangerous commands (recursive force-deletes, history-rewriting git operations,
+pushes) rather than asking an agent nicely not to run them; it fired on me directly this session
+when I tried a `rm -rf` on a scratch directory mid-slice, and the block held. Each slice checkpoints
+as its own commit (occasionally two, when a follow-on fix surfaces immediately after), gate green
+before the next slice starts — 27 commits on this branch, none batched together. An independent
+reviewer role reads
+diffs and reports findings by severity; it never edits code and never grades its own work. A
+ledger (`slices.jsonl`) records every slice's planned and actual time, so drift is visible rather
+than asserted.
+
+**What the controls actually caught, specifically:**
+- **A real spend-guard bypass.** `--limit -1` against `records[:limit]` is Python's from-the-end
+  slice, not "no records" — it silently selected nearly the entire `train` split. Found by the
+  independent reviewer during an adversarial pass on a just-written guard, reproduced live (not
+  simulated), and killed after 46 real API calls before the fix landed.
+- **A stale docstring.** `FixtureClient`'s `FixtureMissError` was documented as "no handler exists
+  ... intended to propagate" when it was written; a handler was added roughly 4–5 hours later,
+  across a session boundary, and the docstring wasn't updated in the same change. Caught by the
+  engineer subagent implementing that later change, not by any review pass — it read the existing
+  docstring while wiring the new handler and flagged the mismatch itself.
+- **A services→adapter layering violation, caught before it landed.** `eval_runner.py`'s first
+  draft imported `estimate_cost_usd` directly from the concrete Anthropic adapter, instead of
+  keeping cost conversion out of the service layer. Caught by me reading the engineer's diff
+  before checkpointing — not by the reviewer agent, which wasn't invoked on that slice — and fixed
+  before the commit landed, so it never shipped.
+- **Imprecise report wording.** A first draft of the keyless-demo section said the replay used
+  "the same tool loop" as the live client; that's not accurate — `FixtureClient` is a flat lookup
+  that ignores conversation state entirely. Caught by direction from the person reviewing this
+  session's work (not autonomously by any agent), verified against the adapter's own source, and
+  rewritten before commit to state plainly what the demo does and does not exercise.
+
+**What the process got wrong, and disclosed rather than hid.** Twice, a subagent's self-reported
+`started`/`finished` timestamp for a ledger entry was fabricated — once reconstructed after the
+fact rather than captured live, once a `finished` time that was in the future relative to wall
+clock. Both are marked `"estimated": true` in `slices.jsonl` with a note explaining why, and
+excluded from this run's own time-calibration numbers rather than quietly corrected and left
+looking like real data. The lesson (a subagent's self-reported timing is not evidence; only the
+orchestrator's own clock call counts) is recorded for the next engagement, not applied
+retroactively to make this one's numbers look cleaner.
+
+**A defect found while writing this section, and fixed, not just disclosed.** While tracing the
+layering-violation finding above, I found a second, uncaught instance: `eval_falsify_check.py`
+imported `StubClient` concretely rather than depending on the `ModelClient` port — the exact class
+of defect an `import-linter` check would have caught, and the specific cost of the decision not to
+add one (declined earlier for budget). Fixed in this session rather than left for Limitations to
+excuse: the client is now injected, with the concrete import moved to the script's own entry
+point, and the module has its first unit test.
+
+**Honest limits.** The `PreToolUse` guard is a rule enforced on specific command patterns, not a
+sandbox — it cannot see inside a `Bash` invocation's own logic or inspect what a subagent chooses
+to read or write within its granted tool access, and CLAUDE.md says this plainly rather than
+claiming otherwise. Most of this codebase was not hand-written; it was implemented by subagents
+against a specification and reviewed at slice and commit boundaries, not authored line by line.
+The parts I read and reasoned through directly, in full, under this run's own "critical-set"
+discipline — the program executor, the scorer and tolerance policy, the gold-replay test, and
+`TurnState`'s design and its cross-turn poisoning risk — are the parts I can defend line by line.
+The Anthropic adapter's API and prompt-caching plumbing, the CLI wiring, and most of the test
+suite were reviewed at checkpoints (diff read, gate re-run, findings fixed or logged) rather than
+read with the same depth, and I'd say so plainly if asked about a specific line I hadn't actually
+traced myself.
