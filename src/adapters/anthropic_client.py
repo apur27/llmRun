@@ -98,10 +98,11 @@ CALCULATE_TOOL: ToolParam = {
 class MissingApiKeyError(Exception):
     """Raised when `ANTHROPIC_API_KEY` is unset at client construction time.
 
-    PROPAGATES: no handler exists in this slice. A missing key means the process cannot make any
-    API call at all, so there is nothing for the adapter to recover into — this is intended to
-    propagate to the top level and terminate the process, after the one stderr line naming the
-    variable has already been written by `from_env`.
+    CAUGHT at the CLI boundary: `src/main.py`'s `chat` and `_build_client` (used by `eval`)
+    both catch this and exit clean (`typer.Exit(code=1)`) on the one stderr line `from_env`
+    already wrote naming the variable, rather than letting it propagate as a traceback --
+    this is the one command a reviewer with no API key actually runs first. Nothing in
+    `src/adapters` itself handles it; this adapter only ever raises it.
     """
 
 

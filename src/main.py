@@ -9,7 +9,11 @@ import typer
 from dotenv import load_dotenv
 from rich import print as rich_print
 
-from src.adapters.anthropic_client import AnthropicClient, MissingApiKeyError
+from src.adapters.anthropic_client import (
+    AnthropicClient,
+    MissingApiKeyError,
+    estimate_cost_usd,
+)
 from src.adapters.ports import ModelClient
 from src.adapters.stub_client import StubClient
 from src.domain.executor import ProgramExecutionError
@@ -131,6 +135,12 @@ def _resolve_records(
         raise typer.BadParameter(
             f"unsupported --split {split!r}: choose 'train' or 'dev'"
         )
+    if limit is not None and limit <= 0:
+        raise typer.BadParameter(
+            f"--limit must be a positive integer, got {limit} -- a zero or negative "
+            "value is not 'no records', it slices from the end (Python list slicing), "
+            "which can silently select nearly the entire split."
+        )
     if client == "anthropic":
         if limit is None:
             raise typer.BadParameter(
@@ -190,6 +200,21 @@ def eval(
     rich_print(
         "tolerant accuracy: "
         f"{summary.tolerant_accuracy} ({summary.tolerant_correct}/{summary.total_turns})"
+    )
+    cost = estimate_cost_usd(
+        summary.cumulative_input_tokens,
+        summary.cumulative_output_tokens,
+        summary.cumulative_cache_creation_tokens,
+        summary.cumulative_cache_read_tokens,
+    )
+    rich_print(
+        f"tokens: {summary.cumulative_input_tokens} in / "
+        f"{summary.cumulative_output_tokens} out "
+        f"(cache write {summary.cumulative_cache_creation_tokens}, "
+        f"cache read {summary.cumulative_cache_read_tokens})"
+    )
+    rich_print(
+        f"estimated cost: ${cost:.4f} (rate assumption, see anthropic_client.py)"
     )
 
 

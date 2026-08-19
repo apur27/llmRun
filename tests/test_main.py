@@ -101,6 +101,32 @@ def test_eval_client_anthropic_split_dev_without_confirm_is_rejected(
     assert "--confirm-dev-run" in result.stdout
 
 
+@pytest.mark.parametrize("bad_limit", ["-1", "0", "-100"])
+def test_eval_rejects_a_non_positive_limit(
+    monkeypatch: pytest.MonkeyPatch, bad_limit: str
+) -> None:
+    """A zero or negative `--limit` is rejected before any client is built.
+
+    Regression test for a real incident: `records[:limit]` with a negative `limit` is
+    Python's from-the-end slice, not "no records" -- `--limit -1` against the 3037-record
+    train split silently selected 3036 of them, sailing past the `--limit`-required check
+    while never triggering the dev-guard (it wasn't `--split dev`). Caught by review,
+    reproduced live, killed mid-run after 46 real API calls before this fix landed.
+    """
+    monkeypatch.setattr(
+        main_module.AnthropicClient,
+        "from_env",
+        classmethod(
+            lambda _cls: pytest.fail("AnthropicClient.from_env must not be reached")
+        ),
+    )
+
+    result = runner.invoke(app, ["eval", "--client", "anthropic", "--limit", bad_limit])
+
+    assert result.exit_code != 0
+    assert "--limit" in result.stdout
+
+
 class _FakeChatClient:
     """A `ModelClient` returning one canned answer per turn index, for `chat`'s CLI test."""
 
