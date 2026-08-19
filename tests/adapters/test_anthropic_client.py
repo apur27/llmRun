@@ -1,0 +1,236 @@
+"""Unit tests for `src.adapters.anthropic_client.AnthropicClient`.
+
+No real network call: the `anthropic.Anthropic` SDK boundary is stubbed by a fake object whose
+`.messages.create` returns hand-built (real) `anthropic.types.Message` objects queued in advance
+— the SDK's own response types, so `isinstance` checks and `.model_dump()` inside the adapter
+behave exactly as they would against a real response. `ProgramExecutionError` (divide-by-zero,
+iteration cap, unparseable answer) is asserted the same way `src/domain/executor.py`'s own tests
+assert it: by actually driving the code down that path, never by mocking the error type itself.
+"""
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
+
+from src.adapters.anthropic_client import AnthropicClient, MissingApiKeyError
+from src.adapters.response_cache import ResponseCache
+from src.domain.executor import ProgramExecutionError
+from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
+
+_USAGE = Usage(input_tokens=1, output_tokens=1)
+
+
+def _make_record(question: str = "what is the value?") -> ConvFinQARecord:
+    """Build a minimal one-turn record with a table, for prompt-building purposes."""
+    return ConvFinQARecord(
+        id="Single_TEST/2020/page_1.pdf-1",
+        doc=Document(pre_text="pre", post_text="post", table={"row": {"col": 1.0}}),
+        dialogue=Dialogue(
+            conv_questions=[question],
+            conv_answers=["1.0"],
+            turn_program=["1.0"],
+            executed_answers=[1.0],
+            qa_split=[False],
+        ),
+        features=Features(
+            num_dialogue_turns=1,
+            has_type2_question=False,
+            has_duplicate_columns=False,
+            has_non_numeric_values=False,
+        ),
+    )
+
+
+def _text_message(text: str) -> Message:
+    """A final `end_turn` message carrying one text block."""
+    return Message(
+        id="msg",
+        content=[TextBlock(text=text, type="text")],
+        model="claude-haiku-4-5-20251001",
+        role="assistant",
+        stop_reason="end_turn",
+        stop_sequence=None,
+        type="message",
+        usage=_USAGE,
+    )
+
+
+def _tool_use_message(
+    tool_use_id: str, operation: str, first: float, second: float
+) -> Message:
+    """A `tool_use` message calling `calculate` once."""
+    return Message(
+        id="msg",
+        content=[
+            ToolUseBlock(
+                id=tool_use_id,
+                input={"operation": operation, "first": first, "second": second},
+                name="calculate",
+                type="tool_use",
+            )
+        ],
+        model="claude-haiku-4-5-20251001",
+        role="assistant",
+        stop_reason="tool_use",
+        stop_sequence=None,
+        type="message",
+        usage=_USAGE,
+    )
+
+
+class _FakeMessages:
+    """Stand-in for `anthropic.Anthropic().messages`, returning queued responses in order."""
+
+    def __init__(self, responses: list[Message]) -> None:
+        """Queue `responses`, returned one per `create` call, in order."""
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> Message:
+        """Record a snapshot of the call and return the next queued response.
+
+        `kwargs["messages"]` is the caller's own mutable list, appended to further after this
+        call returns — a shallow copy is recorded so a later assertion sees the call as it was
+        made, not as the list looks once the whole tool loop has finished mutating it.
+        """
+        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
+        if not self._responses:
+            raise AssertionError("no more fake responses queued")
+        return self._responses.pop(0)
+
+
+class _FakeAnthropic:
+    """Stand-in for `anthropic.Anthropic`, exposing only the `.messages.create` boundary used."""
+
+    def __init__(self, responses: list[Message]) -> None:
+        """Wrap a `_FakeMessages` queue behind the same `.messages` attribute path."""
+        self.messages = _FakeMessages(responses)
+
+
+def _client_with(responses: list[Message], cache_dir: Path) -> AnthropicClient:
+    """Build an `AnthropicClient` over a fake SDK client and a `tmp_path`-backed cache."""
+    fake = _FakeAnthropic(responses)
+    return AnthropicClient(fake, ResponseCache(cache_dir=cache_dir))  # type: ignore[arg-type]
+
+
+def test_from_env_raises_missing_api_key_error_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`from_env` raises `MissingApiKeyError`, not a `KeyError`, when the env var is unset."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(MissingApiKeyError):
+        AnthropicClient.from_env()
+
+
+def test_from_env_writes_the_variable_name_to_stderr_when_unset(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stderr line names `ANTHROPIC_API_KEY` explicitly, for a stranger's first run."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(MissingApiKeyError):
+        AnthropicClient.from_env()
+
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_answer_returns_parsed_float_from_final_text(tmp_path: Path) -> None:
+    """A final `ANSWER: <value>` text response parses to the matching float."""
+    client = _client_with(
+        [_text_message("the value is 9362.2\nANSWER: 9362.2")], tmp_path
+    )
+
+    assert client.answer(_make_record(), 0) == 9362.2
+
+
+def test_answer_returns_parsed_yes_no_string(tmp_path: Path) -> None:
+    """A final `ANSWER: yes` text response parses to the string `"yes"`, not a float."""
+    client = _client_with([_text_message("ANSWER: yes")], tmp_path)
+
+    assert client.answer(_make_record(), 0) == "yes"
+
+
+def test_answer_executes_calculator_tool_call_via_the_domain_executor(
+    tmp_path: Path,
+) -> None:
+    """A `calculate` tool call is routed through `execute_program`, matching its arithmetic."""
+    client = _client_with(
+        [
+            _tool_use_message("tu1", "add", 2, 3),
+            _text_message("ANSWER: 5.0"),
+        ],
+        tmp_path,
+    )
+
+    result = client.answer(_make_record(), 0)
+
+    assert result == 5.0
+
+
+def test_answer_returns_executor_error_as_tool_result_text_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """A tool call that would divide by zero returns the executor's error as tool result text."""
+    client = _client_with(
+        [
+            _tool_use_message("tu1", "divide", 1, 0),
+            _text_message("ANSWER: 0.0"),
+        ],
+        tmp_path,
+    )
+
+    result = client.answer(_make_record(), 0)
+
+    assert result == 0.0
+    second_call_messages = client._client.messages.calls[1]["messages"]  # type: ignore[attr-defined]
+    tool_result_content = second_call_messages[-1]["content"][0]
+    assert tool_result_content["is_error"] is True
+
+
+def test_answer_raises_program_execution_error_past_the_iteration_cap(
+    tmp_path: Path,
+) -> None:
+    """A model that never stops calling tools raises `ProgramExecutionError`, not a hang."""
+    always_tool_use = [_tool_use_message(f"tu{i}", "add", 1, 1) for i in range(10)]
+    client = _client_with(always_tool_use, tmp_path)
+
+    with pytest.raises(ProgramExecutionError):
+        client.answer(_make_record(), 0)
+
+
+def test_answer_repairs_once_on_unparseable_final_text(tmp_path: Path) -> None:
+    """An unparseable final reply triggers one repair round-trip, then succeeds."""
+    client = _client_with(
+        [_text_message("I think it's 5"), _text_message("ANSWER: 5.0")],
+        tmp_path,
+    )
+
+    assert client.answer(_make_record(), 0) == 5.0
+
+
+def test_answer_raises_program_execution_error_after_repair_also_fails(
+    tmp_path: Path,
+) -> None:
+    """Two unparseable replies in a row raise `ProgramExecutionError`, not a third attempt."""
+    client = _client_with(
+        [_text_message("I think it's 5"), _text_message("still no idea")],
+        tmp_path,
+    )
+
+    with pytest.raises(ProgramExecutionError):
+        client.answer(_make_record(), 0)
+
+
+def test_answer_uses_the_response_cache_on_a_repeat_prompt(tmp_path: Path) -> None:
+    """A prompt already in the cache never calls the SDK a second time."""
+    client = _client_with([_text_message("ANSWER: 7.0")], tmp_path)
+    record = _make_record()
+
+    first = client.answer(record, 0)
+    second = client.answer(record, 0)
+
+    assert first == second == 7.0
+    assert len(client._client.messages.calls) == 1  # type: ignore[attr-defined]

@@ -10,6 +10,7 @@ those records at read-time in a later session, not here.
 from dataclasses import dataclass, field
 
 from src.adapters.ports import ModelClient
+from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord
 from src.domain.results import Outcome, Reason, TurnResult
 from src.domain.scorer import ScoreResult, score_turn
@@ -55,9 +56,15 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
     for record in records:
         turns = zip(record.dialogue.turn_program, record.dialogue.executed_answers)
         for turn_index, (turn_program, gold) in enumerate(turns):
-            predicted = client.answer(record, turn_index)
-            result = score_turn(predicted, gold)
             scored_total += 1
+            try:
+                predicted = client.answer(record, turn_index)
+            except ProgramExecutionError:
+                turn_results.append(
+                    _build_parse_error_result(record.id, turn_index, turn_program, gold)
+                )
+                continue
+            result = score_turn(predicted, gold)
             if result.strict_correct:
                 strict_correct += 1
             if result.tolerant_correct:
@@ -81,6 +88,26 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
         strict_accuracy=strict_correct / scored_total if scored_total else 0.0,
         tolerant_accuracy=tolerant_correct / scored_total if scored_total else 0.0,
         turn_results=turn_results,
+    )
+
+
+def _build_parse_error_result(
+    record_id: str, turn_index: int, turn_program: str, gold: float | str
+) -> TurnResult:
+    """Build the `TurnResult` for a turn whose client raised `ProgramExecutionError`.
+
+    No prediction was produced, so `predicted=None` and `reason="parse_error"` — distinct from
+    `"wrong_value"`, which always carries an actual (incorrect) predicted value.
+    """
+    return TurnResult(
+        record_id=record_id,
+        turn_index=turn_index,
+        turn_program=turn_program,
+        gold=gold,
+        predicted=None,
+        outcome="incorrect",
+        reason="parse_error",
+        scale_flip=False,
     )
 
 

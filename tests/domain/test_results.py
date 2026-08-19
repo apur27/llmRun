@@ -43,6 +43,24 @@ def test_incorrect_turn_has_wrong_value_reason() -> None:
     assert result.reason == "wrong_value"
 
 
+def test_parse_error_turn_has_no_predicted_value() -> None:
+    """A turn where the client raised `ProgramExecutionError` records `predicted=None`."""
+    result = TurnResult(
+        record_id="Single_TEST/2020/page_1.pdf-1",
+        turn_index=3,
+        turn_program="add(1, 2)",
+        gold=3.0,
+        predicted=None,
+        outcome="incorrect",
+        reason="parse_error",
+        scale_flip=False,
+    )
+
+    assert result.outcome == "incorrect"
+    assert result.reason == "parse_error"
+    assert result.predicted is None
+
+
 def test_scale_flip_turn_is_still_incorrect() -> None:
     """A scale-flip prediction carries `scale_flip=True` but is never elevated to correct."""
     result = TurnResult(

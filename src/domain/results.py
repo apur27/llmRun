@@ -4,17 +4,18 @@ Deliberately minimal: one `TurnResult` per scored turn, carrying only the fields
 derivable from a `ScoreResult` and the turn it scored. The full stratified error-analysis
 artifact (by number-selection-vs-computation, by turn index, by step count, by type1-vs-type2,
 conversation-level exact match) reads off these same fields at read-time in a later session — it
-is not built here. `reason` currently distinguishes only `"ok"` and `"wrong_value"`: the richer
-taxonomy (`wrong_operation`, `no_answer`, `parse_error`, `timeout`, `provider_error`) needs a real
-model client that can actually produce those failure modes, which does not exist yet. Pure data:
-no I/O, no SDK, no network, no clock.
+is not built here. `reason` currently distinguishes `"ok"`, `"wrong_value"`, and `"parse_error"`
+(the eval runner's catch of `ProgramExecutionError`, which also leaves `predicted=None` since no
+prediction was produced). The richer taxonomy (`wrong_operation`, `no_answer`, `timeout`,
+`provider_error`) needs failure modes a real model client does not yet exercise. Pure data: no
+I/O, no SDK, no network, no clock.
 """
 
 from dataclasses import dataclass
 from typing import Literal
 
 Outcome = Literal["correct", "incorrect"]
-Reason = Literal["ok", "wrong_value"]
+Reason = Literal["ok", "wrong_value", "parse_error"]
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class TurnResult:
     turn_index: int
     turn_program: str
     gold: float | str
-    predicted: float | str
+    predicted: float | str | None
     outcome: Outcome
     reason: Reason
     scale_flip: bool

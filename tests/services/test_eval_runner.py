@@ -7,6 +7,7 @@ counts and accuracies can be checked against a hand-computed expectation.
 
 import pytest
 
+from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
 from src.domain.results import TurnResult
 from src.services.eval_runner import TurnCountMismatchError, run_eval
@@ -140,6 +141,34 @@ def test_run_eval_populates_turn_results_matching_expected_per_turn_records() ->
             scale_flip=False,
         ),
     ]
+
+
+class _RaisesOnSecondTurnClient:
+    """Fake client correct on turn 0, raises `ProgramExecutionError` on turn 1, correct after."""
+
+    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+        """Raise on turn 1, otherwise return the gold answer for `turn_index`."""
+        if turn_index == 1:
+            raise ProgramExecutionError("could not parse a final answer")
+        return record.dialogue.executed_answers[turn_index]
+
+
+def test_run_eval_catches_program_execution_error_as_parse_error() -> None:
+    """A turn whose client raises `ProgramExecutionError` scores `parse_error`, not a crash.
+
+    The rest of the batch still completes: turns 0 and 2 are answered correctly by the same fake
+    client, proving the catch does not abort the loop for later turns or later records.
+    """
+    record = _make_record(["1.0", "2.0", "3.0"], [1.0, 2.0, 3.0])
+
+    summary = run_eval([record], _RaisesOnSecondTurnClient())
+
+    assert summary.total_turns == 3
+    assert summary.tolerant_correct == 2
+    failed_turn = summary.turn_results[1]
+    assert failed_turn.outcome == "incorrect"
+    assert failed_turn.reason == "parse_error"
+    assert failed_turn.predicted is None
 
 
 def test_run_eval_raises_on_turn_count_mismatch() -> None:
