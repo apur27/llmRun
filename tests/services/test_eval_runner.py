@@ -11,6 +11,7 @@ from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
 from src.domain.results import TurnResult
 from src.services.eval_runner import TurnCountMismatchError, run_eval
+from src.services.turn_state import TurnState
 
 _WRONG_ANSWER = "__WRONG__"
 
@@ -42,7 +43,9 @@ def _make_record(
 class _AlwaysCorrectClient:
     """Fake client returning the gold value for every turn."""
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
         """Return the gold answer for `turn_index`, always scoring correct."""
         return record.dialogue.executed_answers[turn_index]
 
@@ -50,7 +53,9 @@ class _AlwaysCorrectClient:
 class _AlwaysWrongClient:
     """Fake client returning a fixed wrong value for every turn."""
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
         """Ignore the record and always return a value that cannot match any gold."""
         return _WRONG_ANSWER
 
@@ -58,7 +63,9 @@ class _AlwaysWrongClient:
 class _FirstTurnCorrectClient:
     """Fake client correct only on the first turn of each record."""
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
         """Return the gold on turn 0, and a wrong value on every later turn."""
         if turn_index == 0:
             return record.dialogue.executed_answers[turn_index]
@@ -146,7 +153,9 @@ def test_run_eval_populates_turn_results_matching_expected_per_turn_records() ->
 class _RaisesOnSecondTurnClient:
     """Fake client correct on turn 0, raises `ProgramExecutionError` on turn 1, correct after."""
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
         """Raise on turn 1, otherwise return the gold answer for `turn_index`."""
         if turn_index == 1:
             raise ProgramExecutionError("could not parse a final answer")
@@ -181,7 +190,9 @@ class _UsageTrackingClient:
         self.cumulative_cache_creation_tokens = 500
         self.cumulative_cache_read_tokens = 1000
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
         """Return the gold answer for `turn_index`, always scoring correct."""
         return record.dialogue.executed_answers[turn_index]
 
@@ -215,6 +226,75 @@ def test_run_eval_defaults_usage_to_zero_for_a_client_without_usage_attributes()
     assert summary.cumulative_output_tokens == 0
     assert summary.cumulative_cache_creation_tokens == 0
     assert summary.cumulative_cache_read_tokens == 0
+
+
+class _TurnStateRecordingClient:
+    """Fake client that snapshots the `turn_state` it was called with, per `(record.id, turn)`."""
+
+    def __init__(self) -> None:
+        """Start with no recorded calls."""
+        self.seen: dict[tuple[str, int], list[str]] = {}
+
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Record the questions already in `turn_state` at call time, then answer correctly."""
+        self.seen[(record.id, turn_index)] = [
+            turn.question for turn in turn_state.turns
+        ]
+        return record.dialogue.executed_answers[turn_index]
+
+
+def test_run_eval_builds_a_fresh_turn_state_per_record() -> None:
+    """A second record's `TurnState` never carries turns from the first record.
+
+    Two two-turn records, both answered correctly: by the time record B's turns are answered,
+    a `TurnState` leaking across records would show B's turn 0 already containing A's turns.
+    """
+    record_a = _make_record(["1.0", "2.0"], [1.0, 2.0])
+    record_a = record_a.model_copy(update={"id": "Single_A/2020/page_1.pdf-1"})
+    record_b = _make_record(["3.0", "4.0"], [3.0, 4.0])
+    record_b = record_b.model_copy(update={"id": "Single_B/2020/page_1.pdf-1"})
+    client = _TurnStateRecordingClient()
+
+    run_eval([record_a, record_b], client)
+
+    assert client.seen[("Single_A/2020/page_1.pdf-1", 0)] == []
+    assert client.seen[("Single_A/2020/page_1.pdf-1", 1)] == ["q"]
+    assert client.seen[("Single_B/2020/page_1.pdf-1", 0)] == []
+    assert client.seen[("Single_B/2020/page_1.pdf-1", 1)] == ["q"]
+
+
+class _WrongFirstTurnRecordingClient:
+    """Fake client wrong on turn 0, then records the `turn_state` it sees on turn 1."""
+
+    def __init__(self) -> None:
+        """Start with no recorded turn-1 history."""
+        self.turn_one_history: list[tuple[str, float | str]] = []
+
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Answer wrong on turn 0; on turn 1, snapshot `turn_state` before answering correctly."""
+        if turn_index == 1:
+            self.turn_one_history = [
+                (turn.question, turn.answer) for turn in turn_state.turns
+            ]
+            return record.dialogue.executed_answers[turn_index]
+        return _WRONG_ANSWER
+
+
+def test_run_eval_appends_the_predicted_answer_not_gold_to_turn_state() -> None:
+    """A wrong prediction on turn 0 is what turn 1's `TurnState` sees, not the gold answer.
+
+    Mirrors real deployment: the model never sees gold, only what it itself answered.
+    """
+    record = _make_record(["1.0", "2.0"], [1.0, 2.0])
+    client = _WrongFirstTurnRecordingClient()
+
+    run_eval([record], client)
+
+    assert client.turn_one_history == [("q", _WRONG_ANSWER)]
 
 
 def test_run_eval_raises_on_turn_count_mismatch() -> None:

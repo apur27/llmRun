@@ -14,6 +14,7 @@ from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord
 from src.domain.results import Outcome, Reason, TurnResult
 from src.domain.scorer import ScoreResult, score_turn
+from src.services.turn_state import TurnState
 
 
 @dataclass(frozen=True)
@@ -53,9 +54,16 @@ class TurnCountMismatchError(Exception):
 def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary:
     """Score `client`'s prediction for every turn of every record in `records`.
 
-    Iterates each record's turns in order, calling `client.answer(record, turn_index)` and
-    scoring the prediction against the paired `executed_answers` entry via `score_turn`. Raises
-    `TurnCountMismatchError` if the number of turns scored does not equal the sum of
+    Iterates each record's turns in order, calling `client.answer(record, turn_index,
+    turn_state)` and scoring the prediction against the paired `executed_answers` entry via
+    `score_turn`. Builds one fresh `TurnState` per record — never shared or carried over between
+    records, since one record is one conversation — and appends each turn's (question,
+    *predicted* answer) onto it before moving to the next turn, so a later turn's client sees
+    what the model itself said, not gold, exactly as a real deployment would. A turn whose
+    client raises `ProgramExecutionError` contributes nothing to `TurnState`: no prediction text
+    was produced, so there is nothing truthful to hand a later turn as "what the model said" —
+    inventing a placeholder would risk a later turn treating a refusal as a real recorded value.
+    Raises `TurnCountMismatchError` if the number of turns scored does not equal the sum of
     `len(dialogue.turn_program)` across `records` — the denominator is asserted, never inferred.
     """
     expected_total = sum(len(record.dialogue.turn_program) for record in records)
@@ -65,11 +73,13 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
     scored_total = 0
     turn_results: list[TurnResult] = []
     for record in records:
+        turn_state = TurnState()
+        questions = record.dialogue.conv_questions
         turns = zip(record.dialogue.turn_program, record.dialogue.executed_answers)
         for turn_index, (turn_program, gold) in enumerate(turns):
             scored_total += 1
             try:
-                predicted = client.answer(record, turn_index)
+                predicted = client.answer(record, turn_index, turn_state)
             except ProgramExecutionError:
                 turn_results.append(
                     _build_parse_error_result(record.id, turn_index, turn_program, gold)
@@ -85,6 +95,7 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
                     record.id, turn_index, turn_program, gold, predicted, result
                 )
             )
+            turn_state.add(questions[turn_index], predicted)
 
     if scored_total != expected_total:
         raise TurnCountMismatchError(

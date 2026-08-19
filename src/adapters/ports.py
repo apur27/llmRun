@@ -9,11 +9,20 @@ real API client stand in for each other without the eval runner importing any of
 from typing import Protocol
 
 from src.domain.models import ConvFinQARecord
+from src.services.turn_state import TurnState
 
 
 class ModelClient(Protocol):
     """Anything that can answer one turn of a ConvFinQA conversation."""
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
-        """Return a prediction for turn `turn_index` of `record`'s dialogue."""
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Return a prediction for turn `turn_index` of `record`'s dialogue.
+
+        `turn_state` carries the conversation's prior turns (question, model's own predicted
+        answer) in order -- never gold -- so an implementation that resolves cross-turn
+        references (e.g. `AnthropicClient`) has what it needs. A client with no use for history
+        (`StubClient`, `FixtureClient`) accepts and ignores it.
+        """
         ...

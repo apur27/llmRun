@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from src.domain.models import ConvFinQARecord
+from src.services.turn_state import TurnState
 
 _KEY_SEPARATOR = ":"
 
@@ -32,8 +33,14 @@ class FixtureClient:
         raw: dict[str, float | str] = json.loads(fixtures_path.read_text())
         self._responses = raw
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
-        """Return the recorded response for `(record.id, turn_index)`, or raise on a miss."""
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Return the recorded response for `(record.id, turn_index)`, or raise on a miss.
+
+        `turn_state` is ignored: fixture responses are pre-recorded per `(record, turn_index)`
+        and never depend on conversation history.
+        """
         key = f"{record.id}{_KEY_SEPARATOR}{turn_index}"
         if key not in self._responses:
             raise FixtureMissError(f"no fixture response recorded for {key!r}")

@@ -7,6 +7,7 @@ every turn in the dataset, numeric or yes/no. Ignores its input entirely.
 """
 
 from src.domain.models import ConvFinQARecord
+from src.services.turn_state import TurnState
 
 STUB_SENTINEL = "__STUB_NEVER_CORRECT__"
 
@@ -14,6 +15,8 @@ STUB_SENTINEL = "__STUB_NEVER_CORRECT__"
 class StubClient:
     """A `ModelClient` that always returns a fixed sentinel, never a numeric or yes/no value."""
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
-        """Ignore `record` and `turn_index`; always return the sentinel string."""
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Ignore `record`, `turn_index`, and `turn_state`; always return the sentinel string."""
         return STUB_SENTINEL

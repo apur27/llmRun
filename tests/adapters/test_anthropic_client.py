@@ -25,6 +25,7 @@ from src.adapters.anthropic_client import (
 from src.adapters.response_cache import ResponseCache
 from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
+from src.services.turn_state import TurnState
 
 _USAGE = Usage(input_tokens=1, output_tokens=1)
 
@@ -154,14 +155,14 @@ def test_answer_returns_parsed_float_from_final_text(tmp_path: Path) -> None:
         [_text_message("the value is 9362.2\nANSWER: 9362.2")], tmp_path
     )
 
-    assert client.answer(_make_record(), 0) == 9362.2
+    assert client.answer(_make_record(), 0, TurnState()) == 9362.2
 
 
 def test_answer_returns_parsed_yes_no_string(tmp_path: Path) -> None:
     """A final `ANSWER: yes` text response parses to the string `"yes"`, not a float."""
     client = _client_with([_text_message("ANSWER: yes")], tmp_path)
 
-    assert client.answer(_make_record(), 0) == "yes"
+    assert client.answer(_make_record(), 0, TurnState()) == "yes"
 
 
 def test_answer_executes_calculator_tool_call_via_the_domain_executor(
@@ -176,7 +177,7 @@ def test_answer_executes_calculator_tool_call_via_the_domain_executor(
         tmp_path,
     )
 
-    result = client.answer(_make_record(), 0)
+    result = client.answer(_make_record(), 0, TurnState())
 
     assert result == 5.0
 
@@ -193,7 +194,7 @@ def test_answer_returns_executor_error_as_tool_result_text_not_a_crash(
         tmp_path,
     )
 
-    result = client.answer(_make_record(), 0)
+    result = client.answer(_make_record(), 0, TurnState())
 
     assert result == 0.0
     second_call_messages = client._client.messages.calls[1]["messages"]  # type: ignore[attr-defined]
@@ -209,7 +210,7 @@ def test_answer_raises_program_execution_error_past_the_iteration_cap(
     client = _client_with(always_tool_use, tmp_path)
 
     with pytest.raises(ProgramExecutionError):
-        client.answer(_make_record(), 0)
+        client.answer(_make_record(), 0, TurnState())
 
 
 def test_answer_repairs_once_on_unparseable_final_text(tmp_path: Path) -> None:
@@ -219,7 +220,7 @@ def test_answer_repairs_once_on_unparseable_final_text(tmp_path: Path) -> None:
         tmp_path,
     )
 
-    assert client.answer(_make_record(), 0) == 5.0
+    assert client.answer(_make_record(), 0, TurnState()) == 5.0
 
 
 def test_answer_raises_program_execution_error_after_repair_also_fails(
@@ -232,7 +233,7 @@ def test_answer_raises_program_execution_error_after_repair_also_fails(
     )
 
     with pytest.raises(ProgramExecutionError):
-        client.answer(_make_record(), 0)
+        client.answer(_make_record(), 0, TurnState())
 
 
 def test_answer_uses_the_response_cache_on_a_repeat_prompt(tmp_path: Path) -> None:
@@ -240,8 +241,8 @@ def test_answer_uses_the_response_cache_on_a_repeat_prompt(tmp_path: Path) -> No
     client = _client_with([_text_message("ANSWER: 7.0")], tmp_path)
     record = _make_record()
 
-    first = client.answer(record, 0)
-    second = client.answer(record, 0)
+    first = client.answer(record, 0, TurnState())
+    second = client.answer(record, 0, TurnState())
 
     assert first == second == 7.0
     assert len(client._client.messages.calls) == 1  # type: ignore[attr-defined]
@@ -264,7 +265,7 @@ def test_answer_accumulates_input_and_output_tokens_from_response_usage(
     usage = Usage(input_tokens=100, output_tokens=20)
     client = _client_with([_text_message("ANSWER: 1.0", usage=usage)], tmp_path)
 
-    client.answer(_make_record(), 0)
+    client.answer(_make_record(), 0, TurnState())
 
     assert client.cumulative_input_tokens == 100
     assert client.cumulative_output_tokens == 20
@@ -282,8 +283,8 @@ def test_answer_accumulates_usage_across_multiple_answer_calls(
         tmp_path,
     )
 
-    client.answer(_make_record("first question?"), 0)
-    client.answer(_make_record("second question?"), 0)
+    client.answer(_make_record("first question?"), 0, TurnState())
+    client.answer(_make_record("second question?"), 0, TurnState())
 
     assert client.cumulative_input_tokens == 40
     assert client.cumulative_output_tokens == 3
@@ -301,7 +302,7 @@ def test_answer_accumulates_usage_across_tool_loop_iterations(tmp_path: Path) ->
         tmp_path,
     )
 
-    client.answer(_make_record(), 0)
+    client.answer(_make_record(), 0, TurnState())
 
     assert client.cumulative_input_tokens == 110
     assert client.cumulative_output_tokens == 13
@@ -319,7 +320,7 @@ def test_answer_accumulates_cache_creation_and_read_tokens_when_present(
     )
     client = _client_with([_text_message("ANSWER: 1.0", usage=usage)], tmp_path)
 
-    client.answer(_make_record(), 0)
+    client.answer(_make_record(), 0, TurnState())
 
     assert client.cumulative_cache_creation_tokens == 500
     assert client.cumulative_cache_read_tokens == 200
@@ -329,7 +330,7 @@ def test_answer_treats_absent_cache_fields_as_zero_not_none(tmp_path: Path) -> N
     """`Usage` with no cache fields set (plain `_USAGE`) accumulates zero, never `None`."""
     client = _client_with([_text_message("ANSWER: 1.0")], tmp_path)
 
-    client.answer(_make_record(), 0)
+    client.answer(_make_record(), 0, TurnState())
 
     assert client.cumulative_cache_creation_tokens == 0
     assert client.cumulative_cache_read_tokens == 0
@@ -377,11 +378,60 @@ def test_different_system_instructions_produce_different_cache_entries(
     )
     record = _make_record()
 
-    result_a = client_a.answer(record, 0)
-    result_b = client_b.answer(record, 0)
+    result_a = client_a.answer(record, 0, TurnState())
+    result_b = client_b.answer(record, 0, TurnState())
 
     assert result_a == 1.0
     assert result_b == 2.0
     assert len(fake_a.messages.calls) == 1
     assert len(fake_b.messages.calls) == 1
     assert len(list(tmp_path.glob("*.json"))) == 2
+
+
+def test_answer_sends_prior_turns_as_real_conversation_history(tmp_path: Path) -> None:
+    """Prior turns from `TurnState` appear as real `user`/`assistant` messages, in order.
+
+    Inspects the actual `messages` list handed to the fake SDK, not just that `answer` runs
+    without error — the whole point of `TurnState` is that a later turn's client can see an
+    earlier turn's question and the model's own recorded answer.
+    """
+    client = _client_with([_text_message("ANSWER: 117.3")], tmp_path)
+    turn_state = TurnState()
+    turn_state.add("what was the value in 2007?", 9362.2)
+    turn_state.add("what was it in 2008?", 9244.9)
+
+    client.answer(_make_record("what was that in 2009?"), 0, turn_state)
+
+    sent_messages = client._client.messages.calls[0]["messages"]  # type: ignore[attr-defined]
+    assert sent_messages == [
+        {"role": "user", "content": "what was the value in 2007?"},
+        {"role": "assistant", "content": "ANSWER: 9362.2"},
+        {"role": "user", "content": "what was it in 2008?"},
+        {"role": "assistant", "content": "ANSWER: 9244.9"},
+        {"role": "user", "content": "what was that in 2009?"},
+    ]
+
+
+def test_answer_with_different_turn_state_history_does_not_hit_the_same_cache_entry(
+    tmp_path: Path,
+) -> None:
+    """Two different prior-turn histories for the same question must not share a cache entry.
+
+    If the cache key ignored `turn_state`, the second call below would replay the first call's
+    cached answer instead of making its own (distinct, queued) SDK call.
+    """
+    client = _client_with(
+        [_text_message("ANSWER: 1.0"), _text_message("ANSWER: 2.0")], tmp_path
+    )
+    record = _make_record("what about that?")
+    history_a = TurnState()
+    history_a.add("q1?", 10.0)
+    history_b = TurnState()
+    history_b.add("q1?", 20.0)
+
+    result_a = client.answer(record, 0, history_a)
+    result_b = client.answer(record, 0, history_b)
+
+    assert result_a == 1.0
+    assert result_b == 2.0
+    assert len(client._client.messages.calls) == 2  # type: ignore[attr-defined]

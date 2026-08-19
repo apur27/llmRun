@@ -10,6 +10,7 @@ import pytest
 
 from src.adapters.fixture_client import FixtureClient, FixtureMissError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
+from src.services.turn_state import TurnState
 
 FIXTURES_PATH = Path(__file__).parent.parent / "fixtures" / "anthropic_responses.json"
 
@@ -35,27 +36,33 @@ def _make_record(record_id: str, num_turns: int) -> ConvFinQARecord:
     )
 
 
-def test_fixture_client_returns_recorded_numeric_response() -> None:
+def test_fixture_client_returns_recorded_numeric_response(
+    empty_turn_state: TurnState,
+) -> None:
     """A `(record, turn_index)` present in the fixture file returns its recorded numeric value."""
     client = FixtureClient(FIXTURES_PATH)
     record = _make_record("Single_JKHY/2009/page_28.pdf-3", num_turns=2)
 
-    assert client.answer(record, 0) == 9362.2
-    assert client.answer(record, 1) == 9244.9
+    assert client.answer(record, 0, empty_turn_state) == 9362.2
+    assert client.answer(record, 1, empty_turn_state) == 9244.9
 
 
-def test_fixture_client_returns_recorded_string_response() -> None:
+def test_fixture_client_returns_recorded_string_response(
+    empty_turn_state: TurnState,
+) -> None:
     """A `(record, turn_index)` recorded as a yes/no string returns that string unchanged."""
     client = FixtureClient(FIXTURES_PATH)
     record = _make_record("Single_RSG/2008/page_114.pdf-2", num_turns=1)
 
-    assert client.answer(record, 0) == "yes"
+    assert client.answer(record, 0, empty_turn_state) == "yes"
 
 
-def test_fixture_client_raises_on_a_miss_rather_than_falling_back() -> None:
+def test_fixture_client_raises_on_a_miss_rather_than_falling_back(
+    empty_turn_state: TurnState,
+) -> None:
     """A `(record, turn_index)` absent from the fixture file raises, never a default or network."""
     client = FixtureClient(FIXTURES_PATH)
     record = _make_record("Single_NOT_IN_FIXTURES/2099/page_1.pdf-1", num_turns=1)
 
     with pytest.raises(FixtureMissError):
-        client.answer(record, 0)
+        client.answer(record, 0, empty_turn_state)

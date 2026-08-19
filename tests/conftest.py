@@ -1,4 +1,4 @@
-"""Shared fixtures: block real network access for the whole suite.
+"""Shared fixtures: block real network access for the whole suite, and a bare `TurnState`.
 
 The gate claims to run "with no API key and no network." Per-test SDK mocking makes that
 true today, but a future test that forgets the mock would silently make a real, billed call
@@ -10,6 +10,8 @@ import socket
 from collections.abc import Iterator
 
 import pytest
+
+from src.services.turn_state import TurnState
 
 
 def _deny_network(*_args: object, **_kwargs: object) -> socket.socket:
@@ -26,3 +28,9 @@ def _block_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(socket, "socket", _deny_network)
     monkeypatch.setattr(socket, "create_connection", _deny_network)
     yield
+
+
+@pytest.fixture
+def empty_turn_state() -> TurnState:
+    """A fresh `TurnState` with no prior turns, for tests that don't exercise history."""
+    return TurnState()

@@ -2,6 +2,7 @@
 
 from src.adapters.stub_client import STUB_SENTINEL, StubClient
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
+from src.services.turn_state import TurnState
 
 
 def _make_record() -> ConvFinQARecord:
@@ -25,20 +26,24 @@ def _make_record() -> ConvFinQARecord:
     )
 
 
-def test_stub_client_returns_sentinel_for_numeric_turn() -> None:
+def test_stub_client_returns_sentinel_for_numeric_turn(
+    empty_turn_state: TurnState,
+) -> None:
     """The stub always returns the sentinel string for a turn with a numeric gold."""
     client = StubClient()
     record = _make_record()
 
-    assert client.answer(record, 0) == STUB_SENTINEL
+    assert client.answer(record, 0, empty_turn_state) == STUB_SENTINEL
 
 
-def test_stub_client_returns_sentinel_for_yes_no_turn() -> None:
+def test_stub_client_returns_sentinel_for_yes_no_turn(
+    empty_turn_state: TurnState,
+) -> None:
     """The stub always returns the sentinel string for a turn with a yes/no gold."""
     client = StubClient()
     record = _make_record()
 
-    assert client.answer(record, 1) == STUB_SENTINEL
+    assert client.answer(record, 1, empty_turn_state) == STUB_SENTINEL
 
 
 def test_stub_client_sentinel_is_never_a_float_or_yes_no() -> None:

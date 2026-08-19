@@ -3,9 +3,11 @@
 The one module in this package allowed to import the `anthropic` SDK — every provider-shaped
 type (message params, tool schemas, content blocks) stays inside this module, per the
 vendor-isolation boundary in `_core.md`/`python.md`. Answers one turn at a time: the current
-turn's question plus the record's document. Deliberately does **not** resolve a reference to a
-prior turn's answer via `TurnState` yet — that is cross-turn conversation state, a later slice's
-job (see the module docstring in `src/domain/executor.py` for the same within-turn/cross-turn
+turn's question, the record's document, and the conversation's prior turns from `TurnState`,
+rendered as real prior `user`/`assistant` messages so the model can resolve a reference to an
+earlier turn's subject or answer ("that", "it") the same way slice 12's real-data probe
+validated (see `notes/risky-unknown.md`) — not gold, only what the model itself answered before
+(see the module docstring in `src/domain/executor.py` for the same within-turn/cross-turn
 distinction). Arithmetic never happens in-token: a `calculate` tool is exposed to the model, and
 every tool call is executed by the same `execute_program` the gold-replay and scorer already
 trust, so the tool's arithmetic can never drift from the executor's semantics.
@@ -31,6 +33,7 @@ from rich import print as rich_print
 from src.adapters.response_cache import ResponseCache
 from src.domain.executor import ProgramExecutionError, execute_program
 from src.domain.models import ConvFinQARecord
+from src.services.turn_state import TurnState
 
 # Kept for session 2: arithmetic is fully externalised to the `calculate` tool, so the model's
 # job is extraction/routing + turn-state recall, not multi-step derivation. Slice 12 validated
@@ -64,7 +67,10 @@ _ANSWER_PATTERN = re.compile(rf"{re.escape(ANSWER_PREFIX)}\s*(.+)", re.IGNORECAS
 _SYSTEM_INSTRUCTIONS = (
     "You are answering a question about a financial document. Use the calculate tool for any "
     "arithmetic instead of computing it yourself. Finish your reply with exactly one line of "
-    f"the form '{ANSWER_PREFIX} <value>', where <value> is a number or yes/no."
+    f"the form '{ANSWER_PREFIX} <value>', where <value> is a number or yes/no. When a computed "
+    "answer is a ratio produced by division, report it as the raw decimal ratio -- do not "
+    "multiply it by 100 to express it as a percentage unless the question explicitly asks for a "
+    "percentage."
 )
 _REPAIR_INSTRUCTIONS = (
     f"Your last reply did not end with a line of the exact form '{ANSWER_PREFIX} <value>'. "
@@ -169,21 +175,27 @@ class AnthropicClient:
             system_instructions=system_instructions,
         )
 
-    def answer(self, record: ConvFinQARecord, turn_index: int) -> float | str:
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
         """Answer turn `turn_index` of `record`'s dialogue via the Anthropic API.
 
-        Uses only the current turn's question and `record`'s document — no cross-turn reference
-        resolution. Checks the response cache first, keyed by the exact prompt text, so a
-        repeated eval run never re-bills an already-answered turn.
+        Sends the current turn's question, `record`'s document, and `turn_state`'s prior turns
+        rendered as real conversation history, so the model can resolve a reference to an
+        earlier turn's subject or answer. Checks the response cache first, keyed by the exact
+        prompt text (document, question, *and* prior-turn history), so a repeated eval run never
+        re-bills an already-answered turn, and two different histories for the same question
+        never collide on one cache entry.
         """
         question = record.dialogue.conv_questions[turn_index]
-        prompt = _prompt_text(record, question, self._system_instructions)
+        prompt = _prompt_text(record, question, self._system_instructions, turn_state)
         cached = self._cache.get(prompt)
         if cached is not None:
             return _parse_final_answer(cached)
 
         system = _system_blocks(record, self._system_instructions)
-        messages: list[MessageParam] = [{"role": "user", "content": question}]
+        messages: list[MessageParam] = _history_messages(turn_state)
+        messages.append({"role": "user", "content": question})
         final_text = self._run_tool_loop(system, messages)
         final_text = self._ensure_parseable(system, messages, final_text)
 
@@ -270,7 +282,11 @@ def _system_blocks(
 
     `cache_control` on the document block is the Anthropic prompt-caching mechanism: the
     pre_text/post_text/table content repeats identically across every turn of the same
-    conversation, so marking it cacheable avoids re-billing it turn after turn.
+    conversation, so marking it cacheable avoids re-billing it turn after turn. Prior-turn
+    history from `TurnState` lives in the `messages` list, not here, and does *not* repeat from
+    turn to turn (each turn adds one more prior turn to the history) -- so this placement is
+    still correct with history in play: caching the document (constant per conversation) and
+    leaving the growing message history uncached is the right split, not an oversight.
     """
     return [
         {"type": "text", "text": system_instructions},
@@ -289,16 +305,54 @@ def _document_text(record: ConvFinQARecord) -> str:
 
 
 def _prompt_text(
-    record: ConvFinQARecord, question: str, system_instructions: str
+    record: ConvFinQARecord,
+    question: str,
+    system_instructions: str,
+    turn_state: TurnState,
 ) -> str:
-    """The full prompt text (system instructions, document, question) used as the cache key.
+    """The full prompt text (system, document, prior-turn history, question) used as the cache key.
 
     Takes `system_instructions` as the same value the caller sends to `_system_blocks`, rather
     than reading the module-level constant directly — the two variants must never converge on
     the same cache key, or an A/B comparison run through this cache would silently replay the
-    first variant's cached answers for the second.
+    first variant's cached answers for the second. Includes `turn_state`'s prior turns for the
+    same reason: two different conversation histories are two different prompts, and must never
+    collide on one cache entry.
     """
-    return f"{system_instructions}\n\n{_document_text(record)}\n\nQuestion: {question}"
+    return (
+        f"{system_instructions}\n\n{_document_text(record)}\n\n"
+        f"{_history_text(turn_state)}Question: {question}"
+    )
+
+
+def _history_messages(turn_state: TurnState) -> list[MessageParam]:
+    """Render `turn_state`'s prior turns as real `user`/`assistant` messages, oldest first.
+
+    Mirrors slice 12's validated probe shape (`notes/risky-unknown.md`): a real growing
+    conversation where the model's own recorded prior answer is what a later turn sees, not
+    gold. Each prior answer is rendered as an `ANSWER:` line so it matches the exact form the
+    model was instructed to produce it in.
+    """
+    messages: list[MessageParam] = []
+    for turn in turn_state.turns:
+        messages.append({"role": "user", "content": turn.question})
+        messages.append(
+            {"role": "assistant", "content": f"{ANSWER_PREFIX} {turn.answer}"}
+        )
+    return messages
+
+
+def _history_text(turn_state: TurnState) -> str:
+    """Render `turn_state`'s prior turns as plain text, for inclusion in the cache key.
+
+    Must vary whenever `_history_messages` would produce a different messages list, so two
+    different conversation histories never collide on one cache entry. Empty string when there
+    is no prior history (a conversation's first turn).
+    """
+    return "".join(
+        f"Prior Q: {turn.question}\nPrior A: {turn.answer}\n"
+        for turn in turn_state.turns
+    )
 
 
 def _tool_results(content: list[Any]) -> list[Any]:
