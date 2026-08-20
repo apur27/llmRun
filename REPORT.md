@@ -106,9 +106,14 @@ make eval-falsify
 ```
 
 ### 3. With a key: run a live conversation
+Copy .env.example to .env and set ANTHROPIC_API_KEY to your own key. .env is gitignored — no credential is committed, and you'll be using your own account.
 
 ```bash
+cp .env.example .env
+# edit .env, add your key
+
 uv run main chat <record_id>
+
 ```
 
 This runs one record's questions in order.
