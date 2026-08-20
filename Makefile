@@ -1,4 +1,4 @@
-.PHONY: check check-clean eval-falsify
+.PHONY: check check-clean eval-falsify recompute-dev
 
 # Full gate: format, lint (no auto-fix), types, tests, entry point.
 # Their pyproject sets [tool.ruff] fix = true, so a bare `ruff check` would rewrite
@@ -20,3 +20,10 @@ check-clean: check
 # that is wrong by construction on every turn.
 eval-falsify:
 	uv run python -m src.services.eval_falsify_check
+
+# Recomputes every dev-results figure this report states, straight from the committed artifact
+# (results/dev_results.jsonl), importing the real scorer rather than reimplementing it. Keyless,
+# offline. Not part of `check`: it verifies one frozen, already-scored measurement, not general
+# code health, same reasoning as eval-falsify above -- a separate, deliberate target.
+recompute-dev:
+	uv run python scripts/recompute_dev.py
