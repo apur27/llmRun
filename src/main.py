@@ -41,7 +41,7 @@ load_dotenv()
 
 app = typer.Typer(
     name="main",
-    help="Boilerplate app for ConvFinQA",
+    help="Conversational agent for ConvFinQA: chat through a document's questions, or run the eval loop for accuracy.",
     add_completion=True,
     no_args_is_help=True,
 )
@@ -367,13 +367,6 @@ def eval(
     rich_print(
         f"estimated cost: ${cost:.4f} (rate assumption, see anthropic_client.py)"
     )
-
-
-@app.command()
-def myfunc() -> None:
-    """My hello world function"""
-    # TODO: YOUR CODE HERE
-    rich_print("Hello World")
 
 
 if __name__ == "__main__":
