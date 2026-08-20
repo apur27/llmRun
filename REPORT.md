@@ -47,6 +47,9 @@ Method for why.
 
 The full gate (`make check`) needs no key and no network.
 
+`docs/TESTING.md` has the full manual verification record for all of the above, run by hand in
+a fresh clone — every exit code, including the guard refusals below.
+
 ## Method
 
 I designed and froze the metric before any model call — everything below comes straight from
@@ -265,13 +268,14 @@ after every small increment. That tooling lives in a separate private repository
 part of this submission. I'm describing it as a process, not a disclaimer: naming its limits
 honestly tells a reviewer more than a clean story would.
 
-**The numbers, checked against the ledger and git, not recalled.** 27 slices across 3
-sessions — 26 landed as commits, one reverted before any file was written and redone under
-the next number. 28 commits on this branch for that work, plus an occasional follow-on commit
-for a fix that surfaced right after landing (noted individually, not folded into a later
-diff) — `git rev-list --count main..HEAD` gives the live figure, since it keeps growing before
-submission. The gate ran green before every one of those commits; I re-ran it myself each
-time, never took a subagent's word for it. `PROCESS.md` has the full slice-by-slice ledger.
+**The numbers, checked against the ledger and git, not recalled.** 36 ledger rows across 6
+sessions — 34 landed as commits, one reverted before any file was written and redone under
+the next number, one skipped with no product-code edit. 42 commits on this branch for that
+work, plus an occasional follow-on commit for a fix that surfaced right after landing (noted
+individually, not folded into a later diff) — `git rev-list --count main..HEAD` gives the live
+figure, since it keeps growing before submission. The gate ran green before every one of those
+commits; I re-ran it myself each time, never took a subagent's word for it. `PROCESS.md` has
+the full slice-by-slice ledger.
 
 **Why the sessions ran in that order.** Session 1 built the pieces that measure accuracy
 before spending any money on a model call, so the metric couldn't get bent to fit a result
