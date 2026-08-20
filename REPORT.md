@@ -66,9 +66,7 @@ These are genuine recorded model outputs, not invented examples.
 
 However, fixture mode is only a lookup using:
 
-```text
-(record_id, turn_index)
-```
+`(record_id, turn_index)`
 
 It does **not** run:
 
@@ -77,9 +75,7 @@ It does **not** run:
 
 Only:
 
-```text
---client anthropic
-```
+`--client anthropic`
 
 runs the complete live path.
 
@@ -99,9 +95,7 @@ over the full train split.
 
 The stub predictor is deliberately wrong on every turn, so the expected accuracy is:
 
-```text
-0.0
-```
+`0.0`
 
 That is the point of the test. It proves the evaluation system can correctly report failure rather than always producing a successful-looking score.
 
@@ -128,9 +122,7 @@ exit  = stop
 
 If no API key is available, the command prints one clear error line and exits with:
 
-```text
-exit code 1
-```
+`exit code 1`
 
 rather than crashing.
 
@@ -218,9 +210,7 @@ Later questions see what the model actually answered earlier.
 
 For example, if a later turn asks:
 
-```text
-and what was that in 2012?
-```
+`and what was that in 2012?`
 
 it sees the model's previous answer, even if that answer was wrong.
 
@@ -232,9 +222,7 @@ Doing that would hide error propagation and measure a system that could not exis
 
 The gold answer is used only here:
 
-```text
-score_turn
-```
+`score_turn`
 
 It is never included in the model prompt.
 
@@ -244,9 +232,7 @@ So the model cannot see the answer key.
 
 The same:
 
-```text
-execute_program
-```
+`execute_program`
 
 function is used for:
 
@@ -255,17 +241,13 @@ function is used for:
 
 The test:
 
-```text
-tests/domain/test_gold_replay.py
-```
+`tests/domain/test_gold_replay.py`
 
 imports and calls that exact implementation.
 
 Replaying all **1,490 dev `turn_program` entries** reproduces the stored `executed_answers` on:
 
-```text
-1490 / 1490
-```
+`1490 / 1490`
 
 within the frozen tolerance.
 
@@ -273,9 +255,7 @@ So there is no separate test calculator that could pass while the production cal
 
 A fuller explanation is in:
 
-```text
-docs/ARCHITECTURE.md
-```
+`docs/ARCHITECTURE.md`
 
 ## Why I used 0.1% relative tolerance
 
@@ -292,9 +272,7 @@ I recalculated all **1,486 numeric dev `turn_program` entries** and compared the
 
 The largest difference between a freshly calculated answer and the stored gold answer was about:
 
-```text
-0.074%
-```
+`0.074%`
 
 So **0.1%** is just above the largest observed difference.
 
@@ -302,9 +280,7 @@ It accepts all **1,486** valid gold calculations.
 
 Making the tolerance ten times larger:
 
-```text
-1%
-```
+`1%`
 
 does not accept a single extra result.
 
@@ -314,9 +290,7 @@ That is why I chose 0.1%.
 
 Exact float equality only matches:
 
-```text
-945 / 1486 = 63.6%
-```
+`945 / 1486 = 63.6%`
 
 even when using an executor with no known errors on this data.
 
@@ -324,9 +298,7 @@ The reason is inconsistent precision in the stored gold answers.
 
 For example:
 
-```text
-354 of 1486
-```
+`354 of 1486`
 
 values need **five or more decimal places** to reproduce exactly.
 
@@ -343,23 +315,17 @@ That is why I report both:
 
 A division may correctly produce:
 
-```text
-0.05
-```
+`0.05`
 
 but the model may answer:
 
-```text
-5
-```
+`5`
 
 because it interprets the result as 5%.
 
 I count that as **wrong** and flag it:
 
-```text
-scale_flip
-```
+`scale_flip`
 
 I do not accept both forms as correct.
 
@@ -372,23 +338,17 @@ I tested **120 train turns** where:
 
 Under the original prompt:
 
-```text
-19 / 120
-```
+`19 / 120`
 
 were scale-flip errors.
 
 If both forms had been accepted as correct, tolerant accuracy would have increased from:
 
-```text
-10 / 120
-```
+`10 / 120`
 
 to:
 
-```text
-29 / 120
-```
+`29 / 120`
 
 without the model improving at all.
 
@@ -398,9 +358,7 @@ That would hide a real weakness.
 
 There are:
 
-```text
-352 / 1486 = 23.7%
-```
+`352 / 1486 = 23.7%`
 
 dev turns where:
 
@@ -411,17 +369,13 @@ These are the turns where ratio-versus-percentage confusion can happen.
 
 The raw magnitude bucket contains:
 
-```text
-411
-```
+`411`
 
 turns.
 
 But:
 
-```text
-59
-```
+`59`
 
 of those do not have `divide` as the top-level operation.
 
@@ -429,9 +383,7 @@ So they cannot have this specific error.
 
 That is why the honest exposure figure is:
 
-```text
-352
-```
+`352`
 
 not 411.
 
@@ -454,51 +406,37 @@ turn 1
 
 Gold is:
 
-```text
-0.68381
-```
+`0.68381`
 
 not:
 
-```text
-68.381
-```
+`68.381`
 
 ### How common this was
 
 From dev gold alone, with no model call:
 
-```text
-369
-```
+`369`
 
 turns have a `divide` result in `(0,1]`.
 
 Of those:
 
-```text
-206 / 369 = 55.8%
-```
+`206 / 369 = 55.8%`
 
 contain either:
 
-```text
-percent
-```
+`percent`
 
 or:
 
-```text
-%
-```
+`%`
 
 Under the old prompt, all **206** were pushed toward the wrong representation.
 
 That is:
 
-```text
-13.9%
-```
+`13.9%`
 
 of the full dev denominator, wrong by construction.
 
@@ -520,9 +458,7 @@ At the turn level:
 
 The paired significance test gave:
 
-```text
-p = 0.000275
-```
+`p = 0.000275`
 
 The one regression was:
 
@@ -533,15 +469,11 @@ turn 4
 
 Gold:
 
-```text
-0.11873
-```
+`0.11873`
 
 Model:
 
-```text
-12.0
-```
+`12.0`
 
 The word "percent" still pulled the model toward percentage form.
 
@@ -593,9 +525,7 @@ What I actually did was:
 
 The final dev evaluation is protected by:
 
-```text
---confirm-dev-run
-```
+`--confirm-dev-run`
 
 because once dev is scored against model predictions, that held-out measurement cannot be made unseen again.
 
@@ -606,9 +536,7 @@ because once dev is scored against model predictions, that held-out measurement 
 
 I scored the full dev set **once**, at commit:
 
-```text
-e93e7d9
-```
+`e93e7d9`
 
 The quality gate was green before and after the run.
 
@@ -645,21 +573,15 @@ Two deeper turn positions exist in dev, at 3/3 and 0/1. They are omitted here as
 
 The paper says second-turn questions often refer back to the first turn, and GPT-3 frequently fails to understand that reference. Its second-turn accuracy falls to:
 
-```text
-29.03%
-```
+`29.03%`
 
 This system stays at:
 
-```text
-77.4%
-```
+`77.4%`
 
 which is almost unchanged from the first-turn result of:
 
-```text
-77.7%
-```
+`77.7%`
 
 The main reason is explicit `TurnState`.
 
@@ -685,21 +607,15 @@ Two results stand out.
 
 Accuracy falls from:
 
-```text
-76.98%
-```
+`76.98%`
 
 for **1-step** (408/530) programs, to:
 
-```text
-74.49%
-```
+`74.49%`
 
 for **2-step** (295/396) programs, and then:
 
-```text
-68.83%
-```
+`68.83%`
 
 for **3+ step** (53/77) programs.
 
@@ -711,15 +627,11 @@ This is useful because it separates **calculation depth** from simply being late
 
 Number-selection accuracy is:
 
-```text
-76.80%
-```
+`76.80%`
 
 Computation accuracy is:
 
-```text
-75.37%
-```
+`75.37%`
 
 That is only about a **1.4 percentage-point difference** across:
 
@@ -736,15 +648,11 @@ This system does not show such a strong difference. It performs almost equally o
 
 Every dev prediction is stored in:
 
-```text
-results/dev_results.jsonl
-```
+`results/dev_results.jsonl`
 
 The file contains:
 
-```text
-1490 lines
-```
+`1490 lines`
 
 with one JSON object for every turn.
 
@@ -771,15 +679,11 @@ make recompute-dev
 
 The script uses the real:
 
-```text
-score_turn
-```
+`score_turn`
 
 function from:
 
-```text
-src/domain/scorer.py
-```
+`src/domain/scorer.py`
 
 rather than creating a second implementation of the scoring rules.
 
@@ -789,23 +693,17 @@ One breakdown needs extra information.
 
 The **Type 1 vs Type 2** comparison uses:
 
-```text
-has_type2_question
-```
+`has_type2_question`
 
 That field is stored in the original dataset, not in `dev_results.jsonl`.
 
 So the script joins the results back to:
 
-```text
-data/convfinqa_dataset.json
-```
+`data/convfinqa_dataset.json`
 
 using:
 
-```text
-record_id
-```
+`record_id`
 
 ---
 
@@ -876,9 +774,7 @@ This was **mildly confirmed**.
 
 Dev accuracy declined from:
 
-```text
-77.7% → 70.4%
-```
+`77.7% → 70.4%`
 
 across turns **1 to 5**.
 
@@ -905,23 +801,17 @@ The pattern supports the paper's claim, but the exact cause is not proven by the
 
 ## Limitations
 
-## Limitations
-
 ### `scale_flip` only detects ×100 and ÷100
 
 The current `scale_flip` check only catches percentage-style errors such as:
 
-```text
-0.05 → 5
-```
+`0.05 → 5`
 
 It does not catch other unit mistakes.
 
 For example, in an early probe the model answered in **millions** when the gold answer was in **billions**. That is a:
 
-```text
-×1000
-```
+`×1000`
 
 error.
 
@@ -933,21 +823,15 @@ I did not expand the rule after seeing just one example. The **352-turn exposure
 
 `make check` does not currently verify that:
 
-```text
-src/services
-```
+`src/services`
 
 never directly imports a concrete class from:
 
-```text
-src/adapters
-```
+`src/adapters`
 
 I considered adding:
 
-```text
-import-linter
-```
+`import-linter`
 
 but left it out for budget reasons.
 
@@ -955,9 +839,7 @@ This gap caused a real defect.
 
 `eval_falsify_check.py` directly imported:
 
-```text
-StubClient
-```
+`StubClient`
 
 I found that manually while writing the report, not through the quality gate.
 
@@ -967,15 +849,11 @@ The specific defect is fixed, but the automated check is still missing.
 
 `eval_runner` reads token counters directly from:
 
-```text
-AnthropicClient
-```
+`AnthropicClient`
 
 but those fields are not declared on the:
 
-```text
-ModelClient
-```
+`ModelClient`
 
 protocol.
 
@@ -983,9 +861,7 @@ This is harmless with the **2 current clients**.
 
 However, a third client with a different structure could silently report:
 
-```text
-0 cost
-```
+`0 cost`
 
 instead of failing clearly.
 
@@ -1000,9 +876,7 @@ To do that, I would need to save the model's tool-call trace for each turn.
 
 The dataset already provides the gold:
 
-```text
-turn_program
-```
+`turn_program`
 
 so the comparison is possible, but I did not build that feature.
 
@@ -1010,9 +884,7 @@ so the comparison is possible, but I did not build that feature.
 
 The keyless fixture currently contains:
 
-```text
-1 conversation
-```
+`1 conversation`
 
 That is enough to demonstrate how the replay mechanism works.
 
@@ -1020,8 +892,6 @@ I did not add more because every extra fixture should come from a **real recorde
 
 
 ---
-
-## Future work
 
 ## Future work
 
@@ -1106,8 +976,6 @@ There is no database and no concurrency in this project, so adding those pattern
 
 ---
 
-## Use of AI tools
-
 ## AI-tool disclosure
 
 I built this with **Claude Code**, supported by my own tooling for running coding agents against a deadline.
@@ -1177,9 +1045,7 @@ An adversarial review found the problem.
 
 I reproduced it and stopped the run after:
 
-```text
-46 real calls
-```
+`46 real calls`
 
 before fixing the guard.
 
@@ -1193,9 +1059,7 @@ A handler had been added several hours later, across a session boundary, but the
 
 An early version of:
 
-```text
-eval_runner.py
-```
+`eval_runner.py`
 
 directly imported a concrete adapter into the service layer.
 
@@ -1227,9 +1091,7 @@ I did not silently replace those values.
 
 Both entries are marked:
 
-```text
-estimated: true
-```
+`estimated: true`
 
 and excluded from the timing figures.
 
@@ -1264,15 +1126,11 @@ If asked about a specific line I had not personally traced, I would say so rathe
 
 I used:
 
-```text
-claude-haiku-4-5-20251001
-```
+`claude-haiku-4-5-20251001`
 
 with:
 
-```text
-temperature = 0
-```
+`temperature = 0`
 
 and pinned the model version as a literal string.
 
