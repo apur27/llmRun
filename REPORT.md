@@ -142,6 +142,22 @@ To be precise: no model predictions were scored against dev during development; 
 replay both read dev's own fields directly, no model involved. Prompt iteration and both
 percentage-convention experiments ran on train. Dev gets scored once, behind a
 `--confirm-dev-run` flag the CLI enforces, because it's a split I can't un-spend.
+
+## Results
+
+The dev run is `results/dev_results.jsonl` — 1490 lines, one JSON object per turn (`record_id`,
+`turn_index`, `turn_program`, `gold`, `predicted`, `outcome`, `reason`, `scale_flip`), written
+as the run progressed and committed unchanged.
+
+`scripts/recompute_dev.py` is the one command that reproduces every figure below straight from
+that file — `make recompute-dev`, or `uv run python scripts/recompute_dev.py`. It re-scores
+every turn by importing `score_turn` from `src/domain/scorer.py`, never reimplementing it, so
+it can't silently drift from the scorer that actually produced these numbers.
+
+One figure needs more than the artifact alone: `type1`/`type2` reads `has_type2_question`,
+which lives on the dataset record, not in `dev_results.jsonl` — the script joins it in by
+`record_id` from `data/convfinqa_dataset.json`.
+
 ## Error Analysis
 
 ### Per-turn accuracy vs. published baselines (dev, tolerant; n=421 per turn except 6th, n=20)
