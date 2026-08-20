@@ -1,3 +1,25 @@
+# ConvFinQA Conversational Agent — Solution Summary
+
+Built a tool-calling conversational agent for ConvFinQA that extracts numbers from the
+document and routes all arithmetic to an external `calculate` tool, scored against dev with a
+frozen tolerance-based metric.
+
+**Result:** 75.84% tolerant / 57.38% strict accuracy on all 1490 dev turns, 64.37%
+conversation-level exact match, $5.62 measured spend.
+
+Three ways to run it, keyless first:
+
+```bash
+uv run main chat "Single_SLG/2013/page_133.pdf-4" --client fixture
+uv run main eval --client stub
+uv run main chat <record_id>
+```
+
+Full detail: [`REPORT.md`](REPORT.md) (approach, results, error analysis, limitations) and
+[`PROCESS.md`](PROCESS.md) (the per-slice build log).
+
+---
+
 # ConvFinQA Assignment
 
 
