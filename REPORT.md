@@ -141,6 +141,17 @@ percentage-convention experiments ran on train. Dev gets scored once, behind a
 `--confirm-dev-run` flag the CLI enforces, because it's a split I can't un-spend.
 ## Error Analysis
 
+### Per-turn accuracy vs. published baselines (dev, tolerant; n=421 per turn except 6th, n=20)
+
+| Turn | This system | FinQANet | GPT-3 DSL |
+|---|---|---|---|
+| 1st | 77.7 | 75.58 | 72.81 |
+| 2nd | 77.4 | 70.74 | 29.03 |
+| 3rd | 74.1 | 66.13 | 56.77 |
+| 4th | 74.4 | 63.96 | 33.12 |
+| 5th | 70.4 | 63.90 | 45.95 |
+| 6th | 75.0 (n=20) | 34.38 | 25.22 |
+
 **Everything below comes from a 47-turn, 12-conversation sample of train, not dev** — dev
 hasn't been run yet (see Method). This is the best evidence available before that run, not a
 substitute for it, and every number carries its own sample size.
