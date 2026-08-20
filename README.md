@@ -1,13 +1,14 @@
 # ConvFinQA Conversational Agent — Solution Summary
 
-Built a tool-calling conversational agent for ConvFinQA that extracts numbers from the
-document and routes all arithmetic to an external `calculate` tool, scored against dev with a
-frozen tolerance-based metric.
+Built a conversational agent for ConvFinQA that:
 
-**Result:** 75.84% tolerant / 57.38% strict accuracy on all 1490 dev turns, 64.37%
-conversation-level exact match, $5.62 measured spend.
+- Pulls the relevant numbers from financial documents.
+- Uses an external calculate tool for all maths.
+- Evaluates performance on the full dev set using a fixed scoring method.
 
-Three ways to run it, keyless first:
+Results: 75.84% tolerant accuracy, 57.38% strict accuracy across all 1,490 dev questions, with 64.37% conversation-level exact match. Total measured cost was $5.62.
+
+There are three ways to run it, starting with the option that requires no API key.
 
 ```bash
 uv run main chat "Single_SLG/2013/page_133.pdf-4" --client fixture
