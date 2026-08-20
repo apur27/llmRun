@@ -9,7 +9,7 @@ those records at read-time in a later session, not here.
 
 from dataclasses import dataclass, field
 
-from src.adapters.ports import ModelClient
+from src.adapters.ports import ModelClient, ProviderError
 from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord
 from src.domain.results import Outcome, Reason, TurnResult
@@ -60,9 +60,12 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
     records, since one record is one conversation — and appends each turn's (question,
     *predicted* answer) onto it before moving to the next turn, so a later turn's client sees
     what the model itself said, not gold, exactly as a real deployment would. A turn whose
-    client raises `ProgramExecutionError` contributes nothing to `TurnState`: no prediction text
-    was produced, so there is nothing truthful to hand a later turn as "what the model said" —
-    inventing a placeholder would risk a later turn treating a refusal as a real recorded value.
+    client raises `ProgramExecutionError` or `ProviderError` contributes nothing to `TurnState`:
+    no prediction text was produced, so there is nothing truthful to hand a later turn as "what
+    the model said" — inventing a placeholder would risk a later turn treating a refusal or a
+    provider failure as a real recorded value. A `ProviderError` (the provider's own bounded
+    retry exhausted) is scored `reason="provider_error"`, `outcome="incorrect"` — the frozen
+    metric rule that a provider failure counts against the denominator rather than shrinking it.
     Raises `TurnCountMismatchError` if the number of turns scored does not equal the sum of
     `len(dialogue.turn_program)` across `records` — the denominator is asserted, never inferred.
     """
@@ -82,7 +85,16 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
                 predicted = client.answer(record, turn_index, turn_state)
             except ProgramExecutionError:
                 turn_results.append(
-                    _build_parse_error_result(record.id, turn_index, turn_program, gold)
+                    _build_error_result(
+                        record.id, turn_index, turn_program, gold, "parse_error"
+                    )
+                )
+                continue
+            except ProviderError:
+                turn_results.append(
+                    _build_error_result(
+                        record.id, turn_index, turn_program, gold, "provider_error"
+                    )
                 )
                 continue
             result = score_turn(predicted, gold)
@@ -135,12 +147,17 @@ def _read_cumulative_usage(client: ModelClient) -> tuple[int, int, int, int]:
     )
 
 
-def _build_parse_error_result(
-    record_id: str, turn_index: int, turn_program: str, gold: float | str
+def _build_error_result(
+    record_id: str,
+    turn_index: int,
+    turn_program: str,
+    gold: float | str,
+    reason: Reason,
 ) -> TurnResult:
-    """Build the `TurnResult` for a turn whose client raised `ProgramExecutionError`.
+    """Build the `TurnResult` for a turn whose client raised an error rather than a prediction.
 
-    No prediction was produced, so `predicted=None` and `reason="parse_error"` — distinct from
+    Shared by both error branches (`ProgramExecutionError` -> `"parse_error"`, `ProviderError`
+    -> `"provider_error"`): no prediction was produced, so `predicted=None` — distinct from
     `"wrong_value"`, which always carries an actual (incorrect) predicted value.
     """
     return TurnResult(
@@ -150,7 +167,7 @@ def _build_parse_error_result(
         gold=gold,
         predicted=None,
         outcome="incorrect",
-        reason="parse_error",
+        reason=reason,
         scale_flip=False,
     )
 

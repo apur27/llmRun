@@ -17,10 +17,12 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any
 
 import anthropic
 from anthropic.types import (
+    Message,
     MessageParam,
     TextBlock,
     TextBlockParam,
@@ -30,6 +32,7 @@ from anthropic.types import (
 )
 from rich import print as rich_print
 
+from src.adapters.ports import ProviderError
 from src.adapters.response_cache import ResponseCache
 from src.domain.executor import ProgramExecutionError, execute_program
 from src.domain.models import ConvFinQARecord
@@ -44,6 +47,19 @@ TEMPERATURE = 0.0
 MAX_TOKENS = 1024
 MAX_TOOL_ITERATIONS = 5
 ANSWER_PREFIX = "ANSWER:"
+
+# Bounded retry for transient provider failures only -- see `_create_with_retry`. A
+# non-transient error (bad request, bad key) is never retried: it fails fast on the first
+# attempt since retrying it would just burn the budget on a call that can never succeed.
+MAX_RETRIES = 3
+RETRY_BASE_DELAY_SECONDS = 1.0
+
+_RETRYABLE_ERRORS = (
+    anthropic.RateLimitError,  # 429
+    anthropic.InternalServerError,  # generic 5xx
+    anthropic.OverloadedError,  # 529, Anthropic-specific "overloaded" -- also effectively 5xx
+    anthropic.APIConnectionError,  # connection failures; APITimeoutError subclasses this
+)
 
 _USD_PER_MILLION_TOKENS = 1_000_000
 
@@ -221,7 +237,7 @@ class AnthropicClient:
     ) -> str:
         """Drive the tool-use loop until the model stops calling tools, or raise past the cap."""
         for _ in range(MAX_TOOL_ITERATIONS):
-            response = self._client.messages.create(
+            response = self._create_with_retry(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
                 temperature=TEMPERATURE,
@@ -241,6 +257,29 @@ class AnthropicClient:
         raise ProgramExecutionError(
             f"tool-call iteration cap ({MAX_TOOL_ITERATIONS}) reached without a final answer"
         )
+
+    def _create_with_retry(self, **kwargs: Any) -> Message:
+        """Call `self._client.messages.create` with bounded retry+backoff on transient failures.
+
+        Only `_RETRYABLE_ERRORS` (rate limit, 5xx, overloaded, connection failure) are caught
+        and retried, up to `MAX_RETRIES` total attempts, with exponential backoff between
+        attempts (`RETRY_BASE_DELAY_SECONDS * 2 ** attempt`). Anything else (e.g.
+        `BadRequestError`, `AuthenticationError`) propagates immediately, unretried, since it
+        means something structurally wrong that a retry cannot fix. If every attempt raises a
+        retryable error, raises `ProviderError` chained from the last one.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response: Message = self._client.messages.create(**kwargs)
+                return response
+            except _RETRYABLE_ERRORS as exc:
+                last_exc = exc
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_BASE_DELAY_SECONDS * (2**attempt))
+        raise ProviderError(
+            f"exhausted {MAX_RETRIES} attempts against the Anthropic API: {last_exc!r}"
+        ) from last_exc
 
     def _accumulate_usage(self, usage: Usage) -> None:
         """Add one API call's `response.usage` onto this instance's running totals.
