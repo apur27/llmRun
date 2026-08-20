@@ -1,33 +1,98 @@
 # PROCESS.md
 
-The engineering ledger: one row per slice, each with an intent written down first, its own
-check, and the full gate re-run before I committed it.
+The engineering ledger has **one row for each slice of work**. Before starting a slice, I wrote down its goal, gave it its own check, and reran the full quality gate before committing it.
 
-Built with Claude Code, using my own tooling for running coding agents against a deadline — a
-hook that blocks specific dangerous commands, a work ledger, a checkpoint per increment. That
-tooling lives in a separate private repository, not part of this submission. This file comes
-directly from two of its records — `slices.jsonl` (planned vs. actual, timestamped) and
-`plan.md` (the decisions, as made). Nothing here is from memory; a missing field says so.
+I built the project with **Claude Code** and my own tooling for managing coding agents against a deadline. That tooling includes:
 
-**On the timings.** Early on a subagent's self-reported start/finish time proved unreliable,
-including two fabricated entries; those are marked `estimated: true` and left out of the
-timing figures below. Later timings came from my own clock. Slices 0, 1, 2 carry that flag
-(reconstructed after the fact). Slice 14's reported finish time was impossible and was
-corrected using the tool call's own reported duration — closer, but still not a live capture.
+* a hook that blocks specific dangerous commands
+* a work ledger
+* a checkpoint after each small increment
 
-**The reverted slice.** `n=3` was stopped before any file was written, to fix the timing issue
-above — listed below as reverted, not omitted; redone cleanly as `n=4`.
+The tooling lives in a separate private repository and is not part of this submission.
 
-**The skipped slice.** `n=35` was cut, not built — a nice-to-have header line for the eval
-summary, dropped because the split it would have named is already visible another way
-(`--split` on the invocation, the denominators in this report). Listed below with its reason,
-not omitted.
+This file comes directly from two records:
 
-## Session 1 — building what measures accuracy (slices 0–12)
+* `slices.jsonl`, which records planned vs. actual work with timestamps
+* `plan.md`, which records decisions as they were made
 
-Zero spend was the goal, so the metric could be frozen before any model existed to tune it
-toward. One exception: slice 12 spent under $0.05 on 3 real conversations early, to de-risk a
-design question.
+Nothing here is based on memory. If information was missing, I say so.
+
+### Timings
+
+Early in the project, I found that a subagent's reported start and finish times were unreliable, including **two fabricated entries**.
+
+Those entries are marked:
+
+```text
+estimated: true
+```
+
+and are excluded from the timing figures.
+
+Later timings came from my own clock.
+
+Slices **0, 1 and 2** are marked as estimated because their times were reconstructed afterwards.
+
+Slice **14** also had an impossible finish time. I corrected it using the tool call's reported duration. That is more reliable, but it is still not a live timestamp.
+
+### Reverted slice
+
+Slice:
+
+```text
+n=3
+```
+
+was stopped before any file was written because of the timing issue above.
+
+It is still listed as **reverted**, rather than being removed.
+
+The same work was redone cleanly as:
+
+```text
+n=4
+```
+
+### Skipped slice
+
+Slice:
+
+```text
+n=35
+```
+
+was deliberately not built.
+
+It would only have added a nice-to-have header to the evaluation summary. I dropped it because the same information was already visible through:
+
+```text
+--split
+```
+
+and through the denominators in the report.
+
+It is still listed in the ledger, together with the reason it was skipped.
+
+## Session 1: building the accuracy measurement system, slices 0 to 12
+
+The goal was **zero model spend**, so I could define and freeze the scoring metric before seeing any model results.
+
+There was one small exception.
+
+Slice **12** spent less than:
+
+```text
+$0.05
+```
+
+on:
+
+```text
+3 real conversations
+```
+
+This was done early to test one design question before continuing.
+
 
 | n | type | intent | decision | planned | actual |
 |---|---|---|---|---|---|
@@ -106,14 +171,29 @@ yet.
 
 ## Totals
 
-36 ledger rows across six sessions: 34 landed as commits, one reverted before any file was
-written (`n=3`, redone as `n=4`), one skipped with no product-code edit (`n=35`). 42 commits on
-this branch for that work, plus an occasional follow-on commit for a fix that surfaced right
-after landing (noted individually, not folded into a later diff) — `git rev-list --count
-main..HEAD` gives the live figure, since it keeps growing before submission. The gate ran green
-before every one of those commits; I re-ran it myself each time, never took a subagent's word
-for it.
+There are **36 ledger rows across 6 sessions**:
 
-975 minutes of session budget across the six sessions (150, 150, 150, 120, 360, 45). Real spend
-against that budget is in the disclosure in `REPORT.md`, not repeated here since it's a
-still-growing figure right up to submission.
+* **34** became commits.
+* **1** was reverted before any file was written, `n=3`, then redone as `n=4`.
+* **1** was skipped without changing product code, `n=35`.
+
+The branch had **42 commits** for this work, plus occasional follow-up fixes added immediately after a slice landed.
+
+The current commit count can be checked with:
+
+```text
+git rev-list --count main..HEAD
+```
+
+because the number continued to grow before submission.
+
+The full quality gate passed before every commit. I reran it myself each time rather than relying on a subagent's report.
+
+Across the 6 sessions, the planned session budget was **975 minutes**:
+
+```text
+150, 150, 150, 120, 360, 45
+```
+
+The actual spend against that budget is reported in `REPORT.md`, because it continued changing until submission.
+
