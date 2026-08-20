@@ -628,7 +628,7 @@ No provider retry had to fall back, and there were no timeout failures.
 
 Tolerant accuracy by turn:
 
-* turns 1 to 5: `n = 421` each
+* turns 1 to 5: `n = 421, 421, 305, 211, 108` respectively
 * turn 6: `n = 20`
 
 | Turn | This system | FinQANet | GPT-3 DSL |
@@ -640,7 +640,7 @@ Tolerant accuracy by turn:
 | 5th  |        70.4 |    63.90 |     45.95 |
 | 6th  |        75.0 |    34.38 |     25.22 |
 
-The **second turn** is especially interesting.
+Two deeper turn positions exist in dev, at 3/3 and 0/1. They are omitted here as too small to be meaningful rather than dropped silently. The **second turn** is especially interesting. 
 
 The paper says second-turn questions often refer back to the first turn, and GPT-3 frequently fails to understand that reference. Its second-turn accuracy falls to:
 
@@ -688,19 +688,19 @@ Accuracy falls from:
 76.98%
 ```
 
-for **1-step** programs, to:
+for **1-step** (408/530) programs, to:
 
 ```text
 74.49%
 ```
 
-for **2-step** programs, and then:
+for **2-step** (295/396) programs, and then:
 
 ```text
 68.83%
 ```
 
-for **3+ step** programs.
+for **3+ step** (53/77) programs.
 
 So longer reasoning chains are clearly harder for the system.
 
