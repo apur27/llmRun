@@ -19,9 +19,11 @@ from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
 import src.adapters.anthropic_client as anthropic_client_module
 from src.adapters.anthropic_client import (
     CACHE_READ_TOKEN_RATE_USD,
+    CLIENT_TIMEOUT_SECONDS,
     INPUT_TOKEN_RATE_USD,
     MAX_RETRIES,
     OUTPUT_TOKEN_RATE_USD,
+    SDK_MAX_RETRIES,
     AnthropicClient,
     MissingApiKeyError,
     estimate_cost_usd,
@@ -155,6 +157,23 @@ class _FakeAnthropic:
         self.messages = _FakeMessages(responses)
 
 
+class _RecordingAnthropicClass:
+    """Stand-in for the `anthropic.Anthropic` *class* itself, recording its `__init__` kwargs.
+
+    Used only by `test_from_env_constructs_sdk_client_with_bounded_timeout_and_no_sdk_retries`
+    to inspect what `from_env` actually passes when building the real SDK client — every other
+    test in this file injects an already-built fake client and never exercises this construction
+    line.
+    """
+
+    last_kwargs: dict[str, Any] | None = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Record `kwargs` on the class so the test can inspect them after construction."""
+        type(self).last_kwargs = kwargs
+        self.messages = _FakeMessages([])
+
+
 def _client_with(
     responses: list[Message | Exception], cache_dir: Path
 ) -> AnthropicClient:
@@ -183,6 +202,29 @@ def test_from_env_writes_the_variable_name_to_stderr_when_unset(
         AnthropicClient.from_env()
 
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_from_env_constructs_sdk_client_with_bounded_timeout_and_no_sdk_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`from_env` passes explicit `timeout`/`max_retries` to `anthropic.Anthropic`.
+
+    So there is exactly one retry policy in effect (`_create_with_retry`'s, not the SDK's own
+    invisible internal one stacked underneath it) and a single hung call is bounded, rather than
+    inheriting the SDK's own defaults (`max_retries=2`, `timeout` up to 600s per leg).
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr(
+        anthropic_client_module.anthropic, "Anthropic", _RecordingAnthropicClass
+    )
+
+    AnthropicClient.from_env()
+
+    assert _RecordingAnthropicClass.last_kwargs == {
+        "api_key": "fake-key-for-test",
+        "timeout": CLIENT_TIMEOUT_SECONDS,
+        "max_retries": SDK_MAX_RETRIES,
+    }
 
 
 def test_answer_returns_parsed_float_from_final_text(tmp_path: Path) -> None:

@@ -54,6 +54,18 @@ ANSWER_PREFIX = "ANSWER:"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
 
+# Passed explicitly to `anthropic.Anthropic(...)` construction in `from_env` (SDK defaults are
+# `max_retries=2`, `timeout` up to 600s per leg -- both far too loose to leave unset).
+# `SDK_MAX_RETRIES = 0` disables the SDK's own internal retry loop so `_create_with_retry` above
+# is the *only* retry policy in effect: no invisible stacking of two independent retry loops, and
+# its worst-case bound (`MAX_RETRIES` attempts) is exactly computable instead of being multiplied
+# by a hidden inner retry count. `CLIENT_TIMEOUT_SECONDS = 30.0` bounds a single hung call to 30s
+# -- roughly 15x this project's measured ~2s/turn average, so it will not false-trigger on a
+# legitimately slow generation, but keeps a genuine hang from ballooning past ~93s across
+# `_create_with_retry`'s up-to-3 attempts.
+CLIENT_TIMEOUT_SECONDS = 30.0
+SDK_MAX_RETRIES = 0
+
 _RETRYABLE_ERRORS = (
     anthropic.RateLimitError,  # 429
     anthropic.InternalServerError,  # generic 5xx
@@ -186,7 +198,11 @@ class AnthropicClient:
                 f"{_API_KEY_ENV_VAR} environment variable is not set"
             )
         return cls(
-            anthropic.Anthropic(api_key=api_key),
+            anthropic.Anthropic(
+                api_key=api_key,
+                timeout=CLIENT_TIMEOUT_SECONDS,
+                max_retries=SDK_MAX_RETRIES,
+            ),
             cache if cache is not None else ResponseCache(),
             system_instructions=system_instructions,
         )
