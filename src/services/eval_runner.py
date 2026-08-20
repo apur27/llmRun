@@ -90,7 +90,12 @@ def run_eval(
     for record in records:
         turn_state = TurnState()
         questions = record.dialogue.conv_questions
-        turns = zip(record.dialogue.turn_program, record.dialogue.executed_answers)
+        # strict=False (explicit, not the default): a length mismatch here is deliberately
+        # left to truncate rather than raise mid-record, so the scored_total != expected_total
+        # check below is what reports it, as TurnCountMismatchError, not a bare zip ValueError.
+        turns = zip(
+            record.dialogue.turn_program, record.dialogue.executed_answers, strict=False
+        )
         for turn_index, (turn_program, gold) in enumerate(turns):
             scored_total += 1
             try:

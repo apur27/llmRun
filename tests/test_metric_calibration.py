@@ -128,7 +128,9 @@ def _dev_turns() -> list[tuple[str, float | str]]:
     turns = []
     for record in _dev_records():
         dialogue = record["dialogue"]
-        turns.extend(zip(dialogue["turn_program"], dialogue["executed_answers"]))
+        turns.extend(
+            zip(dialogue["turn_program"], dialogue["executed_answers"], strict=True)
+        )
     return turns
 
 

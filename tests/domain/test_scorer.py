@@ -138,7 +138,9 @@ def test_frozen_scale_flip_divide_exposure_count_on_real_dev_data() -> None:
     exposure_count = 0
     for record in dev_records:
         dialogue = record.dialogue
-        for program, gold in zip(dialogue.turn_program, dialogue.executed_answers):
+        for program, gold in zip(
+            dialogue.turn_program, dialogue.executed_answers, strict=True
+        ):
             if isinstance(gold, str):
                 continue
             if (
