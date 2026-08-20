@@ -211,7 +211,6 @@ flowchart LR
 
 Three parts of this design are especially important.
 
-`docs/ARCHITECTURE.md` contains more details about the turn flow.
 
 ### `TurnState` stores the model's answers, not gold answers
 
