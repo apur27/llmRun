@@ -332,6 +332,64 @@ def test_run_eval_appends_the_predicted_answer_not_gold_to_turn_state() -> None:
     assert client.turn_one_history == [("q", _WRONG_ANSWER)]
 
 
+class _FourOutcomesClient:
+    """Fake client producing one of each outcome/reason combination, by `turn_index`."""
+
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Turn 0: correct. Turn 1: wrong value. Turn 2: parse error. Turn 3: provider error."""
+        if turn_index == 0:
+            return record.dialogue.executed_answers[turn_index]
+        if turn_index == 1:
+            return _WRONG_ANSWER
+        if turn_index == 2:
+            raise ProgramExecutionError("could not parse a final answer")
+        raise ProviderError("exhausted retries against the Anthropic API")
+
+
+def test_on_turn_fires_once_per_turn_with_correct_outcome_and_running_counts() -> None:
+    """`on_turn` fires exactly once per turn, in order, on every outcome/reason combination.
+
+    Covers all four paths `run_eval` can build a `TurnResult` from: correct (`ok`),
+    incorrect (`wrong_value`), `parse_error`, and `provider_error` -- each must invoke
+    `on_turn` with the same `TurnResult` appended to the summary and the running
+    `(scored_total, expected_total)` counts at that point.
+    """
+    record = _make_record(["1.0", "2.0", "3.0", "4.0"], [1.0, 2.0, 3.0, 4.0])
+    calls: list[tuple[TurnResult, int, int]] = []
+
+    summary = run_eval(
+        [record],
+        _FourOutcomesClient(),
+        on_turn=lambda turn_result, scored, expected: calls.append(
+            (turn_result, scored, expected)
+        ),
+    )
+
+    assert len(calls) == 4
+    assert [call[0].reason for call in calls] == [
+        "ok",
+        "wrong_value",
+        "parse_error",
+        "provider_error",
+    ]
+    assert [call[1] for call in calls] == [1, 2, 3, 4]
+    assert [call[2] for call in calls] == [4, 4, 4, 4]
+    assert [call[0] for call in calls] == summary.turn_results
+
+
+def test_run_eval_without_on_turn_behaves_exactly_as_before() -> None:
+    """Omitting `on_turn` (the default) runs the loop unaffected -- no callback is invoked."""
+    records = [_make_record(["1.0", "greater(1, 0)"], [1.0, "yes"])]
+
+    summary = run_eval(records, _AlwaysCorrectClient())
+
+    assert summary.total_turns == 2
+    assert summary.strict_correct == 2
+    assert summary.tolerant_correct == 2
+
+
 def test_run_eval_raises_on_turn_count_mismatch() -> None:
     """A record whose `executed_answers` is shorter than its `turn_program` raises, not shrinks.
 

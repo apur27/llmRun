@@ -7,6 +7,7 @@ the minimal per-turn `TurnResult` list; the full stratified error-analysis artif
 those records at read-time in a later session, not here.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from src.adapters.ports import ModelClient, ProviderError
@@ -51,7 +52,11 @@ class TurnCountMismatchError(Exception):
     """
 
 
-def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary:
+def run_eval(
+    records: list[ConvFinQARecord],
+    client: ModelClient,
+    on_turn: Callable[[TurnResult, int, int], None] | None = None,
+) -> EvalSummary:
     """Score `client`'s prediction for every turn of every record in `records`.
 
     Iterates each record's turns in order, calling `client.answer(record, turn_index,
@@ -68,6 +73,13 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
     metric rule that a provider failure counts against the denominator rather than shrinking it.
     Raises `TurnCountMismatchError` if the number of turns scored does not equal the sum of
     `len(dialogue.turn_program)` across `records` — the denominator is asserted, never inferred.
+
+    `on_turn`, when given, is called immediately after each `TurnResult` is appended to the
+    running list — on every path (correct, incorrect, `parse_error`, `provider_error`) — as
+    `on_turn(turn_result, scored_total, expected_total)`, so a caller (e.g. the CLI) can report
+    progress or flush results to disk as the run proceeds rather than only once it returns. This
+    module stays clock-free by design (no `time`/`datetime` import): wall-clock tracking is the
+    caller's job, done inside its own `on_turn` callback.
     """
     expected_total = sum(len(record.dialogue.turn_program) for record in records)
 
@@ -84,29 +96,32 @@ def run_eval(records: list[ConvFinQARecord], client: ModelClient) -> EvalSummary
             try:
                 predicted = client.answer(record, turn_index, turn_state)
             except ProgramExecutionError:
-                turn_results.append(
-                    _build_error_result(
-                        record.id, turn_index, turn_program, gold, "parse_error"
-                    )
+                error_result = _build_error_result(
+                    record.id, turn_index, turn_program, gold, "parse_error"
                 )
+                turn_results.append(error_result)
+                if on_turn is not None:
+                    on_turn(error_result, scored_total, expected_total)
                 continue
             except ProviderError:
-                turn_results.append(
-                    _build_error_result(
-                        record.id, turn_index, turn_program, gold, "provider_error"
-                    )
+                error_result = _build_error_result(
+                    record.id, turn_index, turn_program, gold, "provider_error"
                 )
+                turn_results.append(error_result)
+                if on_turn is not None:
+                    on_turn(error_result, scored_total, expected_total)
                 continue
             result = score_turn(predicted, gold)
             if result.strict_correct:
                 strict_correct += 1
             if result.tolerant_correct:
                 tolerant_correct += 1
-            turn_results.append(
-                _build_turn_result(
-                    record.id, turn_index, turn_program, gold, predicted, result
-                )
+            turn_result = _build_turn_result(
+                record.id, turn_index, turn_program, gold, predicted, result
             )
+            turn_results.append(turn_result)
+            if on_turn is not None:
+                on_turn(turn_result, scored_total, expected_total)
             turn_state.add(questions[turn_index], predicted)
 
     if scored_total != expected_total:

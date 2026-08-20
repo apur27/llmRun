@@ -557,6 +557,66 @@ def test_answer_raises_provider_error_after_retries_exhausted(
     assert len(client._client.messages.calls) == MAX_RETRIES  # type: ignore[attr-defined]
 
 
+def test_resume_replays_already_cached_turns_with_zero_new_sdk_calls(
+    tmp_path: Path,
+) -> None:
+    """A "resumed" client, sharing the same on-disk cache, never re-bills already-answered turns.
+
+    Simulates a run that died after 2 turns and is resumed: `client_a` drives 2 real turns
+    (2 real SDK calls, both cached). `client_b` stands in for the resumed process -- a *fresh*
+    fake SDK queued with only 1 response (deliberately: zero responses available for turns 0/1,
+    so the fake would `AssertionError` if `client_b` ever called the SDK for either of them) --
+    over the *same* `ResponseCache(cache_dir=tmp_path)` directory `client_a` just wrote to.
+    Replaying the identical conversation from scratch must return bit-identical answers for
+    turns 0/1 purely from cache, and only the new turn 2 may touch the network.
+    """
+    record = _make_record()
+    record = record.model_copy(
+        update={
+            "dialogue": record.dialogue.model_copy(
+                update={
+                    "conv_questions": [
+                        "what was the value in 2007?",
+                        "what was it in 2008?",
+                        "what was that in 2009?",
+                    ],
+                    "conv_answers": ["1.0", "2.0", "3.0"],
+                    "turn_program": ["1.0", "2.0", "3.0"],
+                    "executed_answers": [1.0, 2.0, 3.0],
+                    "qa_split": [False, False, False],
+                }
+            )
+        }
+    )
+    questions = record.dialogue.conv_questions
+    shared_cache = ResponseCache(cache_dir=tmp_path)
+
+    # "The run before it died": 2 real SDK calls made, both cached.
+    client_a = _client_with(
+        [_text_message("ANSWER: 100.0"), _text_message("ANSWER: 200.0")], tmp_path
+    )
+    turn_state_a = TurnState()
+    ans0 = client_a.answer(record, 0, turn_state_a)
+    turn_state_a.add(questions[0], ans0)
+    ans1 = client_a.answer(record, 1, turn_state_a)
+
+    # "Resume": a fresh fake SDK with only 1 response queued (for the new turn 2 only) --
+    # if turns 0/1 ever reach the SDK, `_FakeMessages.create` raises `AssertionError`.
+    fake_b = _FakeAnthropic([_text_message("ANSWER: 300.0")])
+    client_b = AnthropicClient(fake_b, shared_cache)  # type: ignore[arg-type]
+    turn_state_b = TurnState()
+    ans0_replay = client_b.answer(record, 0, turn_state_b)
+    turn_state_b.add(questions[0], ans0_replay)
+    ans1_replay = client_b.answer(record, 1, turn_state_b)
+    turn_state_b.add(questions[1], ans1_replay)
+    ans2 = client_b.answer(record, 2, turn_state_b)
+
+    assert ans0_replay == ans0 == 100.0
+    assert ans1_replay == ans1 == 200.0
+    assert ans2 == 300.0
+    assert len(fake_b.messages.calls) == 1
+
+
 def test_answer_propagates_non_retryable_error_without_retrying(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

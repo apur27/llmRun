@@ -1,6 +1,9 @@
 """End-to-end tests for the `main` CLI, the documented entry point (`uv run main ...`)."""
 
 import importlib
+import json
+import time
+from pathlib import Path
 
 import dotenv
 import pytest
@@ -10,7 +13,8 @@ import src.main as main_module
 from src.adapters.anthropic_client import MissingApiKeyError
 from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord
-from src.main import app
+from src.domain.results import TurnResult
+from src.main import _build_on_turn, app
 from src.services.turn_state import TurnState
 
 runner = CliRunner()
@@ -35,11 +39,19 @@ def test_eval_stub_runs_end_to_end_over_the_real_dev_split() -> None:
 
 
 def test_eval_default_invocation_uses_train_not_dev() -> None:
-    """`eval --client stub` with no `--split` runs against train, never dev, by default."""
+    """`eval --client stub` with no `--split` runs against train, never dev, by default.
+
+    Checks the denominator (`total turns: 1490` / `.../1490)`), not a bare `"1490"`
+    substring: slice 32's per-turn progress line prints the running numerator
+    (`scored_total`) for every turn, and train has well over 1490 turns, so the digits
+    `1490` pass through as a numerator partway through a full train run regardless of
+    split -- that is not evidence dev was touched. The denominator is.
+    """
     result = runner.invoke(app, ["eval", "--client", "stub"])
 
     assert result.exit_code == 0
-    assert str(EXPECTED_TOTAL_TURN_COUNT) not in result.stdout
+    assert f"total turns: {EXPECTED_TOTAL_TURN_COUNT}" not in result.stdout
+    assert f"/{EXPECTED_TOTAL_TURN_COUNT})" not in result.stdout
     assert "0/1490" not in result.stdout
 
 
@@ -125,6 +137,153 @@ def test_eval_rejects_a_non_positive_limit(
 
     assert result.exit_code != 0
     assert "--limit" in result.stdout
+
+
+def test_eval_out_truncates_at_start_across_two_invocations(tmp_path: Path) -> None:
+    """`--out` opens in write/truncate mode once, so a second run overwrites, never appends.
+
+    First invocation: `--limit 2` (8 turns, per the real train split's first 2 records).
+    Second invocation, same `--out` path: `--limit 3` (12 turns). The final file must have
+    exactly the *second* run's 12 turn-lines, not 8+12=20 -- proving truncate-at-start, not
+    append-across-a-resume. Uses `--client stub` (deterministic, always wrong) since the CLI
+    has no fake-injection seam; this proves the file-writing mechanism's truncate semantics,
+    not the cache-replay guarantee (that is `test_anthropic_client.py`'s
+    `test_resume_replays_already_cached_turns_with_zero_new_sdk_calls`).
+    """
+    out_path = tmp_path / "results.jsonl"
+
+    first = runner.invoke(
+        app,
+        [
+            "eval",
+            "--client",
+            "stub",
+            "--split",
+            "train",
+            "--limit",
+            "2",
+            "--out",
+            str(out_path),
+        ],
+    )
+    assert first.exit_code == 0
+    first_lines = out_path.read_text().splitlines()
+    assert len(first_lines) == 8
+
+    second = runner.invoke(
+        app,
+        [
+            "eval",
+            "--client",
+            "stub",
+            "--split",
+            "train",
+            "--limit",
+            "3",
+            "--out",
+            str(out_path),
+        ],
+    )
+    assert second.exit_code == 0
+    final_lines = out_path.read_text().splitlines()
+
+    assert len(final_lines) == 12  # the second run's own turn count, not 8 + 12
+    for line in final_lines:
+        parsed = json.loads(line)
+        assert set(parsed) == {
+            "record_id",
+            "turn_index",
+            "turn_program",
+            "gold",
+            "predicted",
+            "outcome",
+            "reason",
+            "scale_flip",
+        }
+
+
+class _UsageStandInClient:
+    """A `ModelClient` stand-in exposing mutable cumulative usage attributes for `on_turn` tests."""
+
+    def __init__(self) -> None:
+        """Start at zero usage -- tests mutate the attributes directly between `on_turn` calls."""
+        self.cumulative_input_tokens = 0
+        self.cumulative_output_tokens = 0
+        self.cumulative_cache_creation_tokens = 0
+        self.cumulative_cache_read_tokens = 0
+
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Never called -- these tests drive `on_turn` directly, not through `run_eval`."""
+        raise NotImplementedError
+
+
+def _turn_result(turn_index: int) -> TurnResult:
+    """A minimal always-correct `TurnResult`, for `on_turn` unit tests that ignore its content."""
+    return TurnResult(
+        record_id="Single_TEST/2020/page_1.pdf-1",
+        turn_index=turn_index,
+        turn_program="1.0",
+        gold=1.0,
+        predicted=1.0,
+        outcome="correct",
+        reason="ok",
+        scale_flip=False,
+    )
+
+
+def test_build_on_turn_prints_elapsed_projected_only_on_the_100th_turn(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The elapsed/projected-remaining line prints exactly at scored turn 100 and 200, nowhere else."""
+    on_turn = _build_on_turn(
+        _UsageStandInClient(), start=time.monotonic(), out_handle=None, cost_cap=None
+    )
+
+    for scored in range(1, 201):
+        on_turn(_turn_result(scored - 1), scored, 500)
+
+    output = capsys.readouterr().out
+    assert output.count("elapsed") == 2
+    assert "[100/500] elapsed" in output
+    assert "[200/500] elapsed" in output
+
+
+def test_build_on_turn_warns_cost_cap_exactly_once(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Crossing `--cost-cap` prints one warning, even though later turns stay above the cap too."""
+    client = _UsageStandInClient()
+    on_turn = _build_on_turn(
+        client, start=time.monotonic(), out_handle=None, cost_cap=0.001
+    )
+
+    client.cumulative_input_tokens = (
+        10_000  # cost = 10000 * $1/1e6 = $0.01 >= $0.001 cap
+    )
+    on_turn(_turn_result(0), 1, 5)
+    on_turn(_turn_result(1), 2, 5)
+    client.cumulative_input_tokens = 20_000  # cost climbs further, still above the cap
+    on_turn(_turn_result(2), 3, 5)
+
+    output = capsys.readouterr().out
+    assert output.count("COST CAP CROSSED") == 1
+
+
+def test_build_on_turn_never_warns_when_cost_cap_is_none(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Omitting `--cost-cap` (the default) never prints the warning, no matter the cost."""
+    client = _UsageStandInClient()
+    client.cumulative_input_tokens = 1_000_000
+    on_turn = _build_on_turn(
+        client, start=time.monotonic(), out_handle=None, cost_cap=None
+    )
+
+    on_turn(_turn_result(0), 1, 5)
+
+    assert "COST CAP CROSSED" not in capsys.readouterr().out
 
 
 class _FakeChatClient:
