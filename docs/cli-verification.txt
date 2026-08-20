@@ -1,0 +1,64 @@
+=== uv run main --help
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ chat   Walk one record's own questions, in order, against the chosen client. │
+│ eval   Run the eval loop over a split and print the headline accuracy.       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=0
+=== uv run main chat does-not-exist
+no record found with id 'does-not-exist'
+EXIT=1
+=== uv run main eval --client stub
+total turns: 11104
+strict accuracy: 0.0 (0/11104)
+tolerant accuracy: 0.0 (0/11104)
+tokens: 0 in / 0 out (cache write 0, cache read 0)
+estimated cost: $0.0000 (rate assumption, see anthropic_client.py)
+EXIT=0
+=== uv run main eval --client anthropic
+Usage: main eval [OPTIONS]
+Try 'main eval --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value: --client anthropic requires --limit -- this bills real money, │
+│ so a sample size must be chosen explicitly, never implied by the full split. │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=2
+=== uv run main eval --client anthropic --limit -1
+Try 'main eval --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value: --limit must be a positive integer, got -1 -- a zero or       │
+│ negative value is not 'no records', it slices from the end (Python list      │
+│ slicing), which can silently select nearly the entire split.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=2
+=== uv run main eval --client anthropic --limit 0
+Try 'main eval --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value: --limit must be a positive integer, got 0 -- a zero or        │
+│ negative value is not 'no records', it slices from the end (Python list      │
+│ slicing), which can silently select nearly the entire split.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=2
+=== uv run main eval --client anthropic --split dev --limit 1
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value: --client anthropic --split dev also requires                  │
+│ --confirm-dev-run -- dev is measured once, at the end of the engagement;     │
+│ this flag exists so that can never happen by accident or by a reviewer's     │
+│ default invocation.                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=2
+=== uv run main eval --split banana --client stub
+Usage: main eval [OPTIONS]
+Try 'main eval --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value: unsupported --split 'banana': choose 'train' or 'dev'         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=2
+=== uv run main eval --client nonsense
+Usage: main eval [OPTIONS]
+Try 'main eval --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────╮
+│ Invalid value: unsupported --client 'nonsense': choose 'stub' or 'anthropic' │
+╰──────────────────────────────────────────────────────────────────────────────╯
+EXIT=2
