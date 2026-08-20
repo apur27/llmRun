@@ -67,7 +67,12 @@ uv run python src/main.py
 ```
 
 How to *chat*:
+Copy .env.example to .env and set ANTHROPIC_API_KEY to your own key. .env is gitignored — no credential is committed, and you'll be using your own account.
+
 ```bash
+cp .env.example .env
+# edit .env, add your key
+
 uv run main chat <record_id> 
 ```
 [![Chat](figures/chat_example.png)](figures/chat.png)  
