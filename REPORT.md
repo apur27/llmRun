@@ -1,373 +1,1153 @@
 # ConvFinQA Report
 
+I built a tool-calling conversational agent for **ConvFinQA**.
+
+The model:
+
+* reads the financial document
+* understands what the question refers to
+* decides what calculation is needed
+
+A deterministic Python tool then performs the arithmetic.
+
+This separation is deliberate. The model decides **what maths to do**, while Python **does the maths**. This makes arithmetic predictable and makes failures easier to analyse.
+
+## Full dev result
+
+The dev set was scored **once**:
+
+```text
+421 conversations
+1,490 turns
+```
+
+| Metric                         |                                     Result |
+| ------------------------------ | -----------------------------------------: |
+| Tolerant accuracy              |                     **1130/1490 = 75.84%** |
+| Strict accuracy                |                          855/1490 = 57.38% |
+| Conversation-level exact match |                           271/421 = 64.37% |
+| Model                          | `claude-haiku-4-5-20251001`, temperature 0 |
+| Spend                          |                         $5.62 of a $25 cap |
+| Runtime                        |                                 52 minutes |
+
+For comparison, the ConvFinQA paper reports:
+
+```text
+FinQANet:     68.90
+Human expert: 89.44
+```
+
+Every result above can be reproduced from the committed results file with:
+
+```bash
+make recompute-dev
+```
+
+---
+
 ## Running it
 
-Three paths, in the order a reviewer with no key would want them.
-
-**1. No key — a real conversation, replayed:**
+### 1. No key: replay a real conversation
 
 ```bash
 uv run main chat "Single_SLG/2013/page_133.pdf-4" --client fixture
 ```
 
-No key, no network. This demonstrates the real questions, the real recorded answers (4 real
-values from an earlier real Anthropic call this project made), and the real `chat`/`TurnState`
-loop (`chat` calls `turn_state.add()` after every answer regardless of client) — but
-**`FixtureClient` is a flat `(record, turn_index)` lookup that ignores `turn_state` on replay
-(see its own docstring), so tool routing and the parse-repair path are not exercised by this
-demo**, only by the live `--client anthropic` path. What you're seeing is genuine recorded model
-output, displayed through the real interface, not a live call and not staged data.
+This needs:
 
-**2. No key — the real pipeline, a known-wrong predictor:**
+```text
+no API key
+no network
+```
+
+It replays **4 real answers** from an earlier model run through the same `chat` interface.
+
+These are genuine recorded model outputs, not invented examples.
+
+However, fixture mode is only a lookup using:
+
+`(record_id, turn_index)`
+
+It does **not** run:
+
+* tool routing
+* the parse-repair step
+
+Only:
+
+`--client anthropic`
+
+runs the complete live path.
+
+### 2. No key: test the real evaluation pipeline with an intentionally wrong predictor
 
 ```bash
 uv run main eval --client stub
 ```
 
-Runs the complete pipeline end to end against the real dataset — loader, program executor,
-scorer, denominator — with a predictor that is guaranteed wrong on every turn by construction.
-Prints strict/tolerant accuracy (both `0.0`, by design) with their denominator. This is the
-harness proving itself, not a demo: `make eval-falsify` runs the same check as part of the gate.
-No network call is made.
+This runs the:
 
-**3. With a key — a live conversation:**
+* loader
+* executor
+* scorer
+
+over the full train split.
+
+The stub predictor is deliberately wrong on every turn, so the expected accuracy is:
+
+`0.0`
+
+That is the point of the test. It proves the evaluation system can correctly report failure rather than always producing a successful-looking score.
+
+The same check is included in:
+
+```bash
+make eval-falsify
+```
+
+### 3. With a key: run a live conversation
 
 ```bash
 uv run main chat <record_id>
 ```
 
-Walks one record's own questions against the real Anthropic client, one turn at a time (enter to
-continue, `exit` to stop). Without a key this fails clean — one line naming the missing variable,
-exit 1, no traceback — rather than doing nothing silently or crashing.
+This runs one record's questions in order.
 
-To see accuracy on a real sample rather than a single conversation:
+Controls:
+
+```text
+Enter = next question
+exit  = stop
+```
+
+If no API key is available, the command prints one clear error line and exits with:
+
+`exit code 1`
+
+rather than crashing.
+
+### Run an accuracy sample
 
 ```bash
 uv run main eval --client anthropic --split train --limit <N>
 ```
 
-`--limit` is required (real spend is never sized implicitly). `--split dev` additionally requires
-`--confirm-dev-run`, since `dev` is measured once, at the end of the engagement, and cannot be
-un-spent — see Method for why.
+`--limit` is required whenever the real model is used.
 
-The full gate (`make check`) requires no key and no network.
+This means the number of API calls, and therefore spend, must be chosen explicitly.
+
+Running dev requires an additional guard:
+
+```text
+--split dev
+--confirm-dev-run
+```
+
+That exists because dev is intended to be scored once. After model predictions have been compared with dev, it cannot become unseen data again.
+
+## Testing
+
+The complete quality gate runs without an API key or network access:
+
+```bash
+make check
+```
+
+`docs/TESTING.md` contains the full manual CLI verification from a fresh clone, including the exit codes for each guard condition.
+
+
+---
 
 ## Method
 
-The metric was designed and frozen before any model call was made — derived entirely from dev's
-own `executed_answers` and `turn_program` fields, zero API spend, zero model in the loop. Four
-decisions below, each with what was chosen, what the alternatives were, what the data said, and
-what the choice costs.
+I designed and froze the scoring metric **before making any model calls**.
 
-One turn's path through the system, and the fact the epsilon defence below leans on: the same
-`execute_program` that resolves every live `calculate` tool call is also what the 1490-point gold
-replay runs (`tests/domain/test_gold_replay.py` imports and calls it directly) — arithmetic never
-happens twice, in two implementations that could quietly disagree.
+Everything used to define it came directly from the dev set's own:
+
+```text
+executed_answers
+turn_program
+```
+
+There was **no API spend and no model involved**.
+
+That ordering matters because it prevents the metric from being adjusted later to make the final result look better.
+
+### How one turn works
 
 ```mermaid
 flowchart LR
+
     Q[Turn question] --> P[Build prompt]
+
     TS[(TurnState<br/>prior answers)] --> P
+
     P --> M[Model]
+
     M -->|tool call| EX[execute_program]
+
     EX -->|result| M
+
     M --> A[Parsed answer]
+
     A --> TS
+
     A --> SC[score_turn]
+
     G[(Gold<br/>executed_answers)] --> SC
+
     SC --> R[(results artifact<br/>outcome + reason)]
+
     EX -.same executor.-> GR[Gold replay<br/>1490/1490]
 ```
 
-**The tolerance epsilon is 1e-3 relative error, and the number was measured, not picked by
-convention.** Recomputing every one of dev's 1486 numeric turns' `turn_program` with an executor
-independently proven correct (it reproduces gold on 1490/1490 turns under this same tolerance,
-the harness's own falsification-proof) and sweeping the comparison tolerance gives:
+Three parts of this design are especially important.
 
-| relative epsilon | turns matching gold (of 1486) |
-|---|---|
-| 0 (exact `==`) | 945 |
-| 1e-6 | 1166 |
-| 1e-5 | 1317 |
-| 1e-4 | 1455 |
-| 1e-3 | 1486 (full agreement) |
-| 1e-2 | 1486 (unchanged) |
 
-1e-5 was rejected because agreement is still incomplete there: 1317 of 1486 (88.6%), meaning a
-tolerance that tight would score 169 turns *wrong* even though a from-scratch executor already
-proven correct reproduces gold under a slightly looser comparison — those 169 failures are gold's
-own storage precision leaking into the metric, not the executor being wrong. 1e-2 was rejected for
-the opposite reason: it accepts exactly zero turns beyond what 1e-3 already accepts — a
-ten-times-looser tolerance that changes nothing is not a real choice, it's slack that only makes
-the metric look more forgiving than it needs to be. Between those two rejections, the true minimum
-epsilon for full agreement — the largest relative error dev's own gold values actually exhibit
-against an independently-correct executor — is ~7.4e-4. 1e-3 sits at **1.34x that floor**: a
-deliberate margin, close enough to the empirical floor that it's clearly forgiving storage noise
-and nothing else, loose enough that it isn't brittle to the next turn that happens to land at
-7.41e-4. That margin, not the round number itself, is the actual decision.
+### `TurnState` stores the model's answers, not gold answers
 
-**Exact match caps a perfect system at 63.6%, which is why a tolerance is a correction, not
-leniency.** Comparing the same recomputed `turn_program` results to `executed_answers` with exact
-float equality succeeds on only 945 of 1486 turns (63.6%) — using an executor with no known
-errors on this data. A hypothetically perfect answering system, one that derives the
-mathematically correct value on every single turn, would still score 63.6% under strict match, not
-because it reasoned incorrectly but because gold itself is stored at rounded, inconsistent
-precision: 354 of 1486 values (23.8%) need five or more decimal places to represent exactly, so it
-isn't even a uniform two-decimal rounding rule that could be special-cased away. Reporting only
-exact match would make an unreachable ceiling read as a system failure. This is why the frozen
-METRIC reports strict and tolerant side by side rather than picking one — strict stays as the
-number a reader can audit against raw storage precision, and tolerant is the number that actually
-measures the system rather than the dataset's own recording precision.
+Later questions see what the model actually answered earlier.
 
-**Scale-flip — a predicted value equal to `gold × 100` or `gold ÷ 100`, the ratio-vs-percentage
-confusion `divide` invites — was decided strict and distinct: never coerced into a correct answer,
-only flagged as a diagnostic.** The alternative was costed, not dismissed by assumption. In the
-percentage-convention experiment (N=120 turns, top-level `divide`, `abs(gold) ∈ (0,1]`), 19 of 120
-turns (15.8%) under the baseline system prompt were scale-flip. Had both forms been accepted as
-correct instead, tolerant accuracy on that filtered sample would have roughly tripled — from 10/120
-(8.3%) to 29/120 (24.2%) — without the system doing anything differently. That is what accepting
-both forms would have bought: a systematic model bias absorbed into the headline instead of left
-visible as an error to fix. And it *is* fixable — a one-line system-prompt change (variant B)
-nearly halved the rate on its own, 19/120 to 11/120, a change that would never have been made if
-scale-flip had simply been scored correct from the start. Refusing to auto-correct is what made
-that fix findable.
+For example, if a later turn asks:
 
-The decision costs exposure, and it is stated here rather than left for a reader to work out: 352
-of 1486 dev turns (23.7%) — every turn where the top-level operation is `divide` and gold falls in
-`(0,1]`, the exact condition under which the confusion is possible — have their correctness riding
-entirely on the model getting ratio-vs-percentage framing right, invisible in the headline number
-unless the `scale_flip` flag is inspected specifically. 352, not the raw 411-turn `abs(gold) ∈
-(0,1]` magnitude bucket, because 59 of those 411 turns have a non-`divide` top-level operation
-where the ambiguity cannot occur at all — counting them would overstate the exposure.
+`and what was that in 2012?`
 
-**Train and dev split by design, not by convention: iterate on train, report dev exactly once.**
-The dataset ships train (3037 records) and dev (421 records) with no third, held-out test split.
-The reflex under that constraint is to carve dev in half — an iteration set and a reported set,
-both drawn from the same 421 — and that was rejected. Train carries the same fields and the same
-gold answers as dev, at seven times the volume, and whether it was safe to iterate on was checked,
-not assumed: stripping each document id's `Single_`/`Double_` prefix and `.pdf` suffix and
-comparing the two splits' underlying source documents (1588 in train, 218 in dev) found **zero
-overlap** — no train document is a dev document under a different question. That fact licenses the
-design: prompt iteration, the percentage-convention experiment, the arm-B diagnosis, and the first
-real accuracy sample all ran against train, and none of it can have leaked into what dev reports,
-because there is nothing shared to leak through. Dev itself is measured exactly once, at the end
-of the engagement, behind an explicit `--confirm-dev-run` flag the CLI enforces — the split that
-cannot be re-measured once spent is treated as exactly that.
-## Error Analysis
+it sees the model's previous answer, even if that answer was wrong.
 
-**Sample and its limits, stated first.** Everything below is measured against a 47-turn,
-12-conversation stratified sample of `train` (session 2, slice 18) — not `dev`. `dev` is measured
-exactly once, at the end of the engagement (see Method), and has not been run as of this writing;
-this section is the best evidence available before that run, not a substitute for it. Every number
-below carries its own denominator and its own sample — treat any figure that doesn't as a defect
-in the report, not a smaller number worth omitting.
+I do not replace wrong model answers with gold answers between turns.
 
-**Two conversations account for 8 of the 16 incorrect turns (50%) — read the failure count as
-conversations, not turns.** `Single_AMT/2010/page_98.pdf-2` is 0/4 correct, wrong on every turn by
-a consistent ÷20 unit-scale error; `Single_PNC/2012/page_96.pdf-3` is 1/5 correct, correct only on
-its opening literal-lookup turn, then wrong on every subsequent derived turn via a subtraction
-computed in the reverse order from gold's sign convention. A per-turn tally reports 16 independent
-failures; the data underneath is narrower — two recurring, systematic errors that each happen to
-touch nearly every turn of their own conversation. Most write-ups of a number like this report
-failure *counts*; the distinction changes what "16 wrong turns" should be read to mean.
+Doing that would hide error propagation and measure a system that could not exist in production.
 
-Clustered by cause, all 16 read individually (not the machine `reason` field, which only
-distinguishes `wrong_value` from `parse_error`):
+### Gold enters only during scoring
 
-| Root cause | Count | Share | Example (gold → predicted) |
-|---|---|---|---|
-| Sign/operand-order flip (subtraction in gold's reverse order) | 5 | 31% | `Single_PNC…-3` t2: `16.0 → -16.0` |
-| Unit/scale confusion — one conversation, all 4 turns off by a consistent ÷20 | 4 | 25% | `Single_AMT…-2` t0: `205.4 → 10.27` |
-| Scale-flip (×100 percentage form), flagged by the scorer | 2 | 12.5% | `Double_REGN…` t0: `0.13082 → 13.08` |
-| `parse_error` — no parseable answer after one repair attempt | 2 | 12.5% | `Double_AAL…` t1: `0.00406 → None` |
-| Scale-flip-shaped near-miss, just outside flip-detection tolerance | 1 | 6.25% | `Double_CE…` t2: `0.01176 → 1.18` |
-| Literal misread from the document (off-by-one table read) | 1 | 6.25% | `Double_CE…` t1: `85.0 → 86.0` |
-| Rounding-precision near-miss (0.21% relative error, just above the 0.1% tolerance) | 1 | 6.25% | `Single_PPG…-4` t1: `-0.02355 → -0.0235` |
+The gold answer is used only here:
 
-At n=16, each cluster is roughly 6 percentage points wide; the two largest clusters are the two
-systematic conversations above, not nine independent occurrences spread across nine conversations.
+`score_turn`
 
-**Overall, on this sample**: strict 25/47 (53.2%), tolerant 31/47 (66.0%) — no turns excluded from
-the denominator (`run_eval` asserts the scored count matches the expected count or raises).
+It is never included in the model prompt.
 
-**The divide-only subset — n=11, and the confidence interval matters more than the point
-estimate.** Filtering to the frozen MOVES definition (top-level `divide`, `abs(gold) ∈ (0,1]`)
-gives 11 turns, tolerant accuracy 4/11 (36.4%). At n=11, each turn is 9 percentage points of the
-subset; a Wilson 95% confidence interval on 4/11 is approximately **15%–65%** (independently
-verified at 15.2%–64.6%). That is wide enough that 36.4% should be read as clearing a
-pre-registered falsification threshold — the prediction was that `TurnState` plus the winning
-percentage-form convention would move divide-turn accuracy from 17.5% toward a 56% ceiling, and it
-did move, 17.5%→36.4% — not as a precise magnitude. One sample at this size establishes a
-direction, not a number tight enough to stand alone against a baseline point estimate.
+So the model cannot see the answer key.
 
-**Against the paper's three claims (FinQA, Section 5.3) — confirmed, refuted, or untested, each
-stated on its own rather than assumed:**
+### The same arithmetic code is used everywhere
 
-1. *"The model excels at number selection questions."* **Directionally consistent, not a clean
-   confirmation.** Only 1 of the 16 wrong turns (6.25%) is a pure literal/retrieval miss (the
-   table-read error above); the other 15 all require computation. This sample did not compute a
-   literal-vs-computed accuracy split across the full 47 turns — only the *failures'* composition
-   is known — so this is evidence from the shape of the errors, not a stratified accuracy
-   comparison. Worth computing properly against `dev`, where it's a free stratification (the
-   METRIC section already names it).
-2. *"Later turns... tend to be harder... due to longer reasoning dependencies."* **Untested by
-   this sample.** Turn indices are known for the 16 failures but were not systematically recorded
-   for the 31 correct turns in this spike, so no by-turn-index accuracy exists to confirm or
-   refute this claim here. Stated as a gap, not guessed at — `dev`'s own by-turn-index
-   stratification should answer it.
-3. *"If the prediction for any turn is wrong, then there is a very minor chance that the
-   subsequent turns are correct."* **Consistent with this sample's clustering, but the mechanism
-   isn't established.** Both systematic-error conversations show exactly this shape (AMT wrong
-   from turn 0 onward; PNC correct once, then wrong on every later turn) — but no tool-call
-   transcript was retained for these specific turns, so this sample cannot distinguish genuine
-   error propagation (a wrong answer recorded in `TurnState` being reused and compounding) from
-   two independently-recurring per-turn bugs (a consistent document misread, a consistent sign
-   convention) that happen to produce the same observable pattern. The correlation — 2 of 12
-   conversations, 50% of all misses — supports the claim; the causal mechanism the paper describes
-   is not confirmed by the data in hand.
+The same:
+
+`execute_program`
+
+function is used for:
+
+* live `calculate` tool calls
+* the offline gold replay
+
+The test:
+
+`tests/domain/test_gold_replay.py`
+
+imports and calls that exact implementation.
+
+Replaying all **1,490 dev `turn_program` entries** reproduces the stored `executed_answers` on:
+
+`1490 / 1490`
+
+within the frozen tolerance.
+
+So there is no separate test calculator that could pass while the production calculator is wrong.
+
+A fuller explanation is in:
+
+`docs/ARCHITECTURE.md`
+
+## Why I used 0.1% relative tolerance
+
+I recalculated all **1,486 numeric dev `turn_program` entries** and compared them with the stored gold answers at different tolerances.
+
+| Tolerance    | Turns matching gold, of 1486 |
+| ------------ | ---------------------------: |
+| exact (`==`) |                          945 |
+| 0.0001%      |                         1166 |
+| 0.001%       |                         1317 |
+| 0.01%        |                         1455 |
+| **0.1%**     |                     **1486** |
+| 1%           |                         1486 |
+
+The largest difference between a freshly calculated answer and the stored gold answer was about:
+
+`0.074%`
+
+So **0.1%** is just above the largest observed difference.
+
+It accepts all **1,486** valid gold calculations.
+
+Making the tolerance ten times larger:
+
+`1%`
+
+does not accept a single extra result.
+
+That is why I chose 0.1%.
+
+### Why exact matching is not enough
+
+Exact float equality only matches:
+
+`945 / 1486 = 63.6%`
+
+even when using an executor with no known errors on this data.
+
+The reason is inconsistent precision in the stored gold answers.
+
+For example:
+
+`354 of 1486`
+
+values need **five or more decimal places** to reproduce exactly.
+
+So this is not simply a two-decimal rounding rule that can be special-cased.
+
+If I reported only exact accuracy, a storage-format difference would look like a model failure.
+
+That is why I report both:
+
+* **Strict accuracy**, exact match against stored gold
+* **Tolerant accuracy**, using 0.1% relative tolerance
+
+## Ratio versus percentage
+
+A division may correctly produce:
+
+`0.05`
+
+but the model may answer:
+
+`5`
+
+because it interprets the result as 5%.
+
+I count that as **wrong** and flag it:
+
+`scale_flip`
+
+I do not accept both forms as correct.
+
+### Why I made that decision
+
+I tested **120 train turns** where:
+
+* the top-level operation was `divide`
+* gold was in `(0,1]`
+
+Under the original prompt:
+
+`19 / 120`
+
+were scale-flip errors.
+
+If both forms had been accepted as correct, tolerant accuracy would have increased from:
+
+`10 / 120`
+
+to:
+
+`29 / 120`
+
+without the model improving at all.
+
+That would hide a real weakness.
+
+### How many dev turns are exposed to this problem
+
+There are:
+
+`352 / 1486 = 23.7%`
+
+dev turns where:
+
+* the top-level operation is `divide`
+* gold is in `(0,1]`
+
+These are the turns where ratio-versus-percentage confusion can happen.
+
+The raw magnitude bucket contains:
+
+`411`
+
+turns.
+
+But:
+
+`59`
+
+of those do not have `divide` as the top-level operation.
+
+So they cannot have this specific error.
+
+That is why the honest exposure figure is:
+
+`352`
+
+not 411.
+
+## A prompt rule I removed
+
+My original prompt said to return the raw ratio:
+
+> unless the question explicitly asks for a percentage.
+
+That rule was wrong for this benchmark.
+
+ConvFinQA sometimes stores the raw ratio even when the question says "percent".
+
+For example:
+
+```text
+Single_CME/2010/page_113.pdf-1
+turn 1
+```
+
+Gold is:
+
+`0.68381`
+
+not:
+
+`68.381`
+
+### How common this was
+
+From dev gold alone, with no model call:
+
+`369`
+
+turns have a `divide` result in `(0,1]`.
+
+Of those:
+
+`206 / 369 = 55.8%`
+
+contain either:
+
+`percent`
+
+or:
+
+`%`
+
+Under the old prompt, all **206** were pushed toward the wrong representation.
+
+That is:
+
+`13.9%`
+
+of the full dev denominator, wrong by construction.
+
+So I removed the exception.
+
+### Result of the corrected prompt
+
+I reran the same **120-turn paired train experiment**.
+
+| Metric           |     Old prompt | Corrected prompt |
+| ---------------- | -------------: | ---------------: |
+| Tolerant correct | 21/120 = 17.5% |   36/120 = 30.0% |
+| `scale_flip`     |  11/120 = 9.2% |       0/120 = 0% |
+
+At the turn level:
+
+* **16** moved from wrong to right
+* **1** moved from right to wrong
+
+The paired significance test gave:
+
+`p = 0.000275`
+
+The one regression was:
+
+```text
+Single_GS/2018/page_68.pdf-1
+turn 4
+```
+
+Gold:
+
+`0.11873`
+
+Model:
+
+`12.0`
+
+The word "percent" still pulled the model toward percentage form.
+
+I would have removed the old rule even without this experiment because it directly contradicted the benchmark.
+
+The experiment simply measured how much the correction helped.
+
+## Train and dev
+
+The dataset contains:
+
+```text
+train: 3037 records
+dev:    421 records
+```
+
+There is no third held-out split.
+
+I chose not to split dev in half.
+
+Doing that would use half of the only genuinely unseen data during development.
+
+Train has the same fields and gold answers and is about **seven times larger**.
+
+I also checked whether train and dev share source documents.
+
+After removing the `Single_` / `Double_` prefixes and `.pdf` suffixes:
+
+```text
+train source documents: 1588
+dev source documents:    218
+overlap:                    0
+```
+
+So prompt iteration on train does not reuse the same source documents as dev.
+
+### Precisely what dev was used for
+
+It would be inaccurate to say dev was completely untouched.
+
+What I actually did was:
+
+* I **did not** score model predictions against dev during development.
+* I **did** use dev gold fields to validate the scoring method.
+* The tolerance sweep used dev gold.
+* The 1,490-point gold replay used dev gold.
+* Neither involved model predictions or API spend.
+* All prompt experiments ran on train.
+
+The final dev evaluation is protected by:
+
+`--confirm-dev-run`
+
+because once dev is scored against model predictions, that held-out measurement cannot be made unseen again.
+
+
+---
+
+## Results
+
+I scored the full dev set **once**, at commit:
+
+`e93e7d9`
+
+The quality gate was green before and after the run.
+
+| Metric                         | Value                                            |
+| ------------------------------ | ------------------------------------------------ |
+| Tolerant accuracy              | **1130/1490 = 75.84%**                           |
+| Strict accuracy                | 855/1490 = 57.38%                                |
+| Conversation-level exact match | 271/421 = 64.37%                                 |
+| Reasons                        | `ok` 1130 · `wrong_value` 335 · `parse_error` 25 |
+| `provider_error` / `timeout`   | 0                                                |
+| `scale_flip`                   | 10/1490 = 0.67%                                  |
+| Spend                          | $5.6207 of a $25 cap                             |
+| Wall clock                     | 3,143s = 52.4 min, sequential                    |
+
+No provider retry had to fall back, and there were no timeout failures.
+
+### Accuracy by conversation turn
+
+Tolerant accuracy by turn:
+
+* turns 1 to 5: `n = 421, 421, 305, 211, 108` respectively
+* turn 6: `n = 20`
+
+| Turn | This system | FinQANet | GPT-3 DSL |
+| ---- | ----------: | -------: | --------: |
+| 1st  |        77.7 |    75.58 |     72.81 |
+| 2nd  |    **77.4** |    70.74 | **29.03** |
+| 3rd  |        74.1 |    66.13 |     56.77 |
+| 4th  |        74.4 |    63.96 |     33.12 |
+| 5th  |        70.4 |    63.90 |     45.95 |
+| 6th  |        75.0 |    34.38 |     25.22 |
+
+Two deeper turn positions exist in dev, at 3/3 and 0/1. They are omitted here as too small to be meaningful rather than dropped silently. The **second turn** is especially interesting. 
+
+The paper says second-turn questions often refer back to the first turn, and GPT-3 frequently fails to understand that reference. Its second-turn accuracy falls to:
+
+`29.03%`
+
+This system stays at:
+
+`77.4%`
+
+which is almost unchanged from the first-turn result of:
+
+`77.7%`
+
+The main reason is explicit `TurnState`.
+
+Previous model answers are stored and made available to later turns, so the model can resolve references using recorded conversation state rather than reconstructing everything from scratch.
+
+### Other breakdowns
+
+| Group                                     |            Result |
+| ----------------------------------------- | ----------------: |
+| Number selection, literal program         |  374/487 = 76.80% |
+| Computation, any operation                | 756/1003 = 75.37% |
+| 1-step programs                           |            76.98% |
+| 2-step programs                           |            74.49% |
+| 3+ step programs                          |            68.83% |
+| Turns with internal `#0` / `#1` reference |            73.96% |
+| Turns without internal reference          |            76.67% |
+| Type 1 conversations                      | 823/1052 = 78.23% |
+| Type 2, hybrid conversations              |  307/438 = 70.09% |
+
+Two results stand out.
+
+### 1. Accuracy drops as programs get longer
+
+Accuracy falls from:
+
+`76.98%`
+
+for **1-step** (408/530) programs, to:
+
+`74.49%`
+
+for **2-step** (295/396) programs, and then:
+
+`68.83%`
+
+for **3+ step** (53/77) programs.
+
+So longer reasoning chains are clearly harder for the system.
+
+This is useful because it separates **calculation depth** from simply being later in a conversation.
+
+### 2. Number selection is only slightly easier than computation
+
+Number-selection accuracy is:
+
+`76.80%`
+
+Computation accuracy is:
+
+`75.37%`
+
+That is only about a **1.4 percentage-point difference** across:
+
+```text
+487 number-selection turns
+1003 computation turns
+```
+
+The FinQA paper says FinQANet "excels at number selection questions".
+
+This system does not show such a strong difference. It performs almost equally on number selection and computation.
+
+## Reproducing the results
+
+Every dev prediction is stored in:
+
+`results/dev_results.jsonl`
+
+The file contains:
+
+`1490 lines`
+
+with one JSON object for every turn.
+
+Each record includes:
+
+```text
+record_id
+turn_index
+turn_program
+gold
+predicted
+outcome
+reason
+scale_flip
+```
+
+The results were written to disk one turn at a time during the dev run and committed unchanged.
+
+To reproduce the reported figures:
+
+```bash
+make recompute-dev
+```
+
+The script uses the real:
+
+`score_turn`
+
+function from:
+
+`src/domain/scorer.py`
+
+rather than creating a second implementation of the scoring rules.
+
+This means the reporting code uses the same scorer as the actual evaluation.
+
+One breakdown needs extra information.
+
+The **Type 1 vs Type 2** comparison uses:
+
+`has_type2_question`
+
+That field is stored in the original dataset, not in `dev_results.jsonl`.
+
+So the script joins the results back to:
+
+`data/convfinqa_dataset.json`
+
+using:
+
+`record_id`
+
+---
+
+## Error analysis
+
+The final dev run had **360 wrong turns**:
+
+* **335** were `wrong_value`, meaning the model produced a parseable answer but the value was wrong.
+* **25** were `parse_error`, meaning no usable answer could be extracted even after **one repair attempt**.
+
+No turns were removed from the denominator. The runner checks that the number of scored turns matches the expected number and raises an error if it does not.
+
+The detailed root-cause analysis below was done manually on a smaller **47-turn, 12-conversation train sample** before the dev run.
+
+So:
+
+* the **dev run measures how often failures happened**
+* the **train sample helps explain why they happened**
+
+### Failures cluster by conversation
+
+In the train sample, **2 conversations caused 8 of the 16 wrong turns**.
+
+`Single_AMT/2010/page_98.pdf-2` was wrong on all **4 turns**. Every answer was off by the same factor of **20**.
+
+`Single_PNC/2012/page_96.pdf-3` got the first lookup question right, but every later derived answer was wrong because subtraction was done in the opposite order from gold.
+
+If I only count turns, that looks like **16 separate failures**.
+
+But the underlying picture is narrower: a few systematic mistakes affected several turns in the same conversation.
+
+| Root cause                             | Count | Example                                  |
+| -------------------------------------- | ----: | ---------------------------------------- |
+| Sign flip, subtraction reversed        |     5 | `Single_PNC…-3` t2: `16.0 → -16.0`       |
+| Unit/scale error, one conversation ÷20 |     4 | `Single_AMT…-2` t0: `205.4 → 10.27`      |
+| Scale-flip ×100                        |     2 | `Double_REGN…` t0: `0.13082 → 13.08`     |
+| `parse_error` after one repair         |     2 | `Double_AAL…` t1: `0.00406 → None`       |
+| Scale-flip-shaped near miss            |     1 | `Double_CE…` t2: `0.01176 → 1.18`        |
+| Literal table misread                  |     1 | `Double_CE…` t1: `85.0 → 86.0`           |
+| Rounding miss                          |     1 | `Single_PPG…-4` t1: `-0.02355 → -0.0235` |
+
+Because there were only **16 failures**, each one represents about **6 percentage points**. These percentages should therefore be treated as rough indicators, not precise estimates.
+
+The **2 `scale_flip` failures** happened before the prompt fix described in Method.
+
+On dev, the `scale_flip` rate is now only **0.67%**.
+
+I did not rerun the exact **47-turn sample** after the prompt change, so I cannot claim what its updated accuracy would be.
+
+## Comparison with the paper's three claims
+
+### 1. "The model excels at number selection questions."
+
+This was **not clearly confirmed on dev**.
+
+Accuracy was:
+
+* **76.80%** on literal-program turns
+* **75.37%** on computation turns
+
+That is only a **1.4 percentage-point gap**.
+
+So the system was slightly better at direct number selection, but not by the large margin described in the paper.
+
+### 2. "Later turns tend to be harder."
+
+This was **mildly confirmed**.
+
+Dev accuracy declined from:
+
+`77.7% → 70.4%`
+
+across turns **1 to 5**.
+
+Accuracy also declined consistently as program depth increased.
+
+However, the decline was much smaller than in either published baseline.
+
+### 3. "A wrong turn makes later turns unlikely to be right."
+
+The results are **consistent with this claim, but do not prove it**.
+
+The train sample showed clear clustering, where one mistake was followed by several later failures in the same conversation.
+
+However, I did not retain the detailed tool-call trace for those turns.
+
+So I cannot tell whether:
+
+* a wrong value stored in `TurnState` directly caused the next error, or
+* the model independently made the same kind of mistake again
+
+The pattern supports the paper's claim, but the exact cause is not proven by the data I kept.
+
+---
+
 ## Limitations
 
-**`scale_flip` only detects `×100`/`÷100` confusion, not other unit-conversion errors.** A real
-case (JPM t0, slice 12's real-data investigation) had the model answer in millions where gold was
-in billions — a ×1000 error, invisible to the scorer's flip check, indistinguishable in the
-headline from any other wrong answer. Not extended this session: the 352-turn scale-flip exposure
-figure is a frozen metric decision, and widening the detector on a sample of one real occurrence
-would reopen that decision without evidence of how often the broader class actually recurs.
+### `scale_flip` only detects ×100 and ÷100
 
-**No automated check enforces the module layering, and that gap produced a real, uncaught
-defect.** `import-linter` (or equivalent) was considered and declined early in the engagement for
-budget (`plan.md`, the GATE section) — nothing in `make check` verifies that `src/services` never
-imports a concrete `src/adapters` class. That gap is not hypothetical: `eval_falsify_check.py`
-imported `StubClient` directly, the exact defect class the declined control exists to catch, and
-it went unnoticed until found by hand while writing this section, not by review or the gate. The
-one found instance is fixed (see the AI-tool disclosure below); the gap itself — nothing prevents
-a second instance in the next slice anyone writes — remains, and adding the control is named in
-Future Work with its own cost, not folded into this fix.
+The current `scale_flip` check only catches percentage-style errors such as:
 
-## Future Work
+`0.05 → 5`
 
-Each cut below was a decision, made with a stated reason, not something the timeline forced
-silently.
+It does not catch other unit mistakes.
 
-**Out of scope for this engagement, by design:** retrieval or a vector store (each record ships
-its own document — retrieving across documents isn't the problem this dataset poses, and building
-one would be the most common way to over-build this task); fine-tuning; DSL program synthesis
-(closed explicitly — tool-calling with an explicit calculator is the different lane the brief
-asked for); multi-agent orchestration; a web interface; a second model provider; persistence
-between processes; Repository/Unit-of-Work/message-bus/CQRS patterns (no database, no concurrency
-— applying them here would be a scope error, not sophistication).
+For example, in an early probe the model answered in **millions** when the gold answer was in **billions**. That is a:
 
-**Named gaps, not silently dropped:**
-- `scale_flip` only detects `×100`/`÷100` confusion, not other unit-conversion errors (a real
-  ×1000 case was observed once, JPM t0 in slice 12's investigation, and is *not* caught). Not
-  extended this session — the 352-turn exposure figure is a frozen metric decision, and widening
-  the detector on a sample of one would reopen it without real evidence of how often it recurs.
-  Worth measuring properly on `dev`.
-- `eval_runner._read_cumulative_usage` duck-types `cumulative_*_tokens` attributes that exist on
-  `AnthropicClient` but aren't declared on the `ModelClient` Protocol — harmless with the two
-  clients that exist today, but silently reports zero cost for a future client that doesn't
-  happen to match that undeclared shape.
-- The by-turn-index and literal-vs-computed accuracy stratifications (both free, from fields
-  already in the data, per the frozen METRIC section) were not computed this session — only the
-  47-turn train sample's failure composition was read manually. Both are the natural next
-  measurement, on `dev`.
-- Add `import-linter` (or equivalent) to enforce the `cli → adapters → services → domain`
-  dependency direction in the gate — see Limitations for why this matters, not just in theory.
-  Not added this session: it's a bigger call than the one violation it would have caught justifies
-  this late — configuring the contract, running it against the whole tree, and fixing whatever
-  else it surfaces (unknown until run) is real, uncosted work, distinct from the few-line fix that
-  closed the one known instance.
-- `FixtureClient`'s reviewer-facing fixture set covers one conversation. Extending it to a few
-  more (one per turn-count bucket) would make the keyless demo more representative; not done here
-  because one clean example already demonstrates the mechanism, and each additional one is a real
-  recorded conversation, not free data.
+`×1000`
 
-**What's left before submission**: the `dev` split, measured exactly once, and the report's
-numbers finalized against it — deliberately not done in this session (see Method's split
-reasoning and the `--confirm-dev-run` guard). That run, a final polish pass, and the PR are the
-remaining steps, not additional design work.
+error.
+
+The detector does not flag it separately, so it appears as an ordinary wrong answer.
+
+I did not expand the rule after seeing just one example. The **352-turn exposure figure** was already frozen, and changing the rule based on a single case would reopen the metric without knowing how common the wider problem is.
+
+### No automated layering check
+
+`make check` does not currently verify that:
+
+`src/services`
+
+never directly imports a concrete class from:
+
+`src/adapters`
+
+I considered adding:
+
+`import-linter`
+
+but left it out for budget reasons.
+
+This gap caused a real defect.
+
+`eval_falsify_check.py` directly imported:
+
+`StubClient`
+
+I found that manually while writing the report, not through the quality gate.
+
+The specific defect is fixed, but the automated check is still missing.
+
+### Cost reporting is not fully defined by the interface
+
+`eval_runner` reads token counters directly from:
+
+`AnthropicClient`
+
+but those fields are not declared on the:
+
+`ModelClient`
+
+protocol.
+
+This is harmless with the **2 current clients**.
+
+However, a third client with a different structure could silently report:
+
+`0 cost`
+
+instead of failing clearly.
+
+### `wrong_operation` is not calculated
+
+The current results cannot cleanly distinguish between:
+
+* choosing the wrong number
+* choosing the wrong arithmetic operation
+
+To do that, I would need to save the model's tool-call trace for each turn.
+
+The dataset already provides the gold:
+
+`turn_program`
+
+so the comparison is possible, but I did not build that feature.
+
+### The keyless demo covers one conversation
+
+The keyless fixture currently contains:
+
+`1 conversation`
+
+That is enough to demonstrate how the replay mechanism works.
+
+I did not add more because every extra fixture should come from a **real recorded conversation**, rather than invented example data.
+
+
+---
+
+## Future work
+
+Ranked by what would move the system closest to production.
+
+1. **Capture tool-call traces and add `wrong_operation`**
+
+   The dataset already contains the gold programs.
+
+   This would let me split the **335 `wrong_value` turns** into:
+
+   * wrong number selected
+   * wrong operation chosen
+
+   That is the biggest missing piece in the current error analysis.
+
+2. **Investigate the decline on programs with 3+ steps**
+
+   Accuracy falls to:
+
+   ```text
+   68.83%
+   ```
+
+   compared with:
+
+   ```text
+   76.98%
+   ```
+
+   for one-step programs.
+
+   Longer calculations are where the system is weakest, and the sample is large enough to investigate properly.
+
+3. **Detect more unit errors**
+
+   The current check mainly catches:
+
+   ```text
+   ×100 / ÷100
+   ```
+
+   such as ratio-versus-percentage mistakes.
+
+   I would extend this to other scale errors, but only after measuring how often they actually occur.
+
+4. **Add `import-linter`**
+
+   This would automatically enforce the intended dependency direction in the quality gate.
+
+   I did not add it here because configuring the rules and fixing any additional violations it finds would be real, unplanned work.
+
+5. **Expand the keyless fixture set**
+
+   Add at least one recorded conversation for each turn-count bucket.
+
+   This would make the no-key demo more representative without requiring network access.
+
+## Deliberately out of scope
+
+I intentionally did not add:
+
+* retrieval or a vector store
+* fine-tuning
+* DSL program synthesis
+* multi-agent orchestration
+* a web interface
+* a second model provider
+* persistence between processes
+
+Retrieval is unnecessary here because each record already includes the document needed to answer its questions. Cross-document search is not the problem ConvFinQA is testing.
+
+I also left out:
+
+* Repository pattern
+* Unit of Work
+* message bus
+* CQRS
+
+There is no database and no concurrency in this project, so adding those patterns would increase complexity without solving a real problem.
+
+
+---
 
 ## AI-tool disclosure
 
-This was built with Claude Code, orchestrated by a small internal framework (RainMaker) that
-splits work into short, checked increments rather than one long generation. It's worth describing
-as an engineering process, not a disclaimer, because the process is itself evidence of how I use
-these tools — and because naming its limits honestly is more useful to a reviewer than a clean
-story would be.
+I built this with **Claude Code**, supported by my own tooling for running coding agents against a deadline.
 
-**What was delegated, and what wasn't.** Implementation of individual, pre-scoped slices — the
-program executor, the scorer, the Anthropic adapter, CLI wiring, the tests that go with each —
-went to a subagent per slice, given an intent, a file list, and a check command, nothing more.
-What did **not** get delegated: the metric itself (the tolerance epsilon, the scale-flip decision,
-the train/dev split — all decided by me, frozen before any model call existed, and never handed to
-a model to choose); the plan and slice sequencing; and every checkpoint verification. No slice was
-marked done on a subagent's own report — the gate was independently re-run and the diff read
-before every commit, every time (count verifiable with `git rev-list --count
-main..rainmaker/20260819-0724-tomoro-task` — not restated here as a fixed number, since it grows
-before submission).
+That tooling includes:
 
-**The controls, concretely.** A `PreToolUse` hook is a rule, not a prompt — it deterministically
-blocks specific dangerous commands (recursive force-deletes, history-rewriting git operations,
-pushes) rather than asking an agent nicely not to run them. Two real instances, not hypothetical:
-attempting a recursive force-delete on a scratch directory mid-slice was denied outright
-(`BLOCKED: ... use targeted deletes, not recursive force. Ask the human if you truly need it.`) —
-I renamed the target instead of asking for an exception; and separately, the same guard's one-time
-soft-deadline stop fired during an earlier session's pause, denying the first write after the
-deadline until "the ledger state" was posted and scope was cut — enforcing planning discipline
-structurally, not just command safety. Each slice checkpoints as its own commit (occasionally two,
-when a follow-on fix surfaces immediately after), gate green before the next slice starts, none
-batched together. An independent reviewer role reads
-diffs and reports findings by severity; it never edits code and never grades its own work. A
-ledger (`slices.jsonl`) records every slice's planned and actual time, so drift is visible rather
-than asserted.
+* a pre-tool-use hook
+* a work ledger
+* a checkpoint after each increment
 
-**What the controls actually caught, specifically:**
-- **A real spend-guard bypass.** `--limit -1` against `records[:limit]` is Python's from-the-end
-  slice, not "no records" — it silently selected nearly the entire `train` split. Found by the
-  independent reviewer during an adversarial pass on a just-written guard, reproduced live (not
-  simulated), and killed after 46 real API calls before the fix landed.
-- **A stale docstring.** `FixtureClient`'s `FixtureMissError` was documented as "no handler exists
-  ... intended to propagate" when it was written; a handler was added roughly 4–5 hours later,
-  across a session boundary, and the docstring wasn't updated in the same change. Caught by the
-  engineer subagent implementing that later change, not by any review pass — it read the existing
-  docstring while wiring the new handler and flagged the mismatch itself.
-- **A services→adapter layering violation, caught before it landed.** `eval_runner.py`'s first
-  draft imported `estimate_cost_usd` directly from the concrete Anthropic adapter, instead of
-  keeping cost conversion out of the service layer. Caught by me reading the engineer's diff
-  before checkpointing — not by the reviewer agent, which wasn't invoked on that slice — and fixed
-  before the commit landed, so it never shipped.
-- **Imprecise report wording.** A first draft of the keyless-demo section said the replay used
-  "the same tool loop" as the live client; that's not accurate — `FixtureClient` is a flat lookup
-  that ignores conversation state entirely. Caught by direction from the person reviewing this
-  session's work (not autonomously by any agent), verified against the adapter's own source, and
-  rewritten before commit to state plainly what the demo does and does not exercise.
+The tooling lives in a separate private repository and is not part of this submission.
 
-**What the process got wrong, and disclosed rather than hid.** Twice, a subagent's self-reported
-`started`/`finished` timestamp for a ledger entry was fabricated — once reconstructed after the
-fact rather than captured live, once a `finished` time that was in the future relative to wall
-clock. Both are marked `"estimated": true` in `slices.jsonl` with a note explaining why, and
-excluded from this run's own time-calibration numbers rather than quietly corrected and left
-looking like real data. The lesson (a subagent's self-reported timing is not evidence; only the
-orchestrator's own clock call counts) is recorded for the next engagement, not applied
-retroactively to make this one's numbers look cleaner.
+`PROCESS.md` contains the full slice-by-slice record and the incidents summarised below.
 
-**A defect found while writing this section, and fixed, not just disclosed.** While tracing the
-layering-violation finding above, I found a second, uncaught instance: `eval_falsify_check.py`
-imported `StubClient` concretely rather than depending on the `ModelClient` port — the exact class
-of defect an `import-linter` check would have caught, and the specific cost of the decision not to
-add one (declined earlier for budget). Fixed in this session rather than left for Limitations to
-excuse: the client is now injected, with the concrete import moved to the script's own entry
-point, and the module has its first unit test.
+### What I delegated
 
-**Honest limits.** The `PreToolUse` guard is a rule enforced on specific command patterns, not a
-sandbox — it cannot see inside a `Bash` invocation's own logic or inspect what a subagent chooses
-to read or write within its granted tool access, and CLAUDE.md says this plainly rather than
-claiming otherwise. Most of this codebase was not hand-written; it was implemented by subagents
-against a specification and reviewed at slice and commit boundaries, not authored line by line.
-The parts I read and reasoned through directly, in full, under this run's own "critical-set"
-discipline — the program executor, the scorer and tolerance policy, the gold-replay test, and
-`TurnState`'s design and its cross-turn poisoning risk — are the parts I can defend line by line.
-The Anthropic adapter's API and prompt-caching plumbing, the CLI wiring, and most of the test
-suite were reviewed at checkpoints (diff read, gate re-run, findings fixed or logged) rather than
-read with the same depth, and I'd say so plainly if asked about a specific line I hadn't actually
-traced myself.
+I delegated individual, pre-scoped implementation slices, including:
+
+* the executor
+* the scorer
+* the Anthropic adapter
+* CLI wiring
+* tests for each slice
+
+Each subagent received:
+
+* a clear intent
+* a limited file list
+* a check command
+
+### What I kept under my control
+
+I did not delegate the core evaluation decisions:
+
+* the tolerance
+* the `scale_flip` policy
+* the train/dev split
+* the overall plan
+* the order of the slices
+* checkpoint verification
+
+These decisions were made and frozen **before any model call**.
+
+I also did not mark a slice complete just because a subagent said it was done.
+
+Before every commit, I:
+
+* reran the full quality gate
+* read the diff
+* fixed or recorded any problems
+
+### What the controls caught
+
+The process caught several real problems.
+
+**1. `--limit -1` bypassed the spend guard**
+
+A guard accepted:
+
+```text
+--limit -1
+```
+
+In Python, that does not mean "run no records". It can slice from the end and therefore selected nearly the whole train split.
+
+An adversarial review found the problem.
+
+I reproduced it and stopped the run after:
+
+`46 real calls`
+
+before fixing the guard.
+
+**2. An outdated docstring**
+
+A docstring said an exception would always propagate uncaught.
+
+A handler had been added several hours later, across a session boundary, but the docstring had not been updated.
+
+**3. A layering violation**
+
+An early version of:
+
+`eval_runner.py`
+
+directly imported a concrete adapter into the service layer.
+
+I caught this while reading the diff before checkpointing.
+
+**4. An incorrect report claim**
+
+An earlier draft said the keyless demo used:
+
+> "the same tool loop"
+
+as the live client.
+
+That was incorrect.
+
+The keyless demo is a **flat lookup of recorded answers**. It does not exercise the live tool-routing loop.
+
+I checked the source and corrected the report.
+
+### What went wrong with timing records
+
+Twice, a subagent reported incorrect slice timings.
+
+In one case, the time had been reconstructed afterwards.
+
+In another, the reported finish time was later than the start of the next task.
+
+I did not silently replace those values.
+
+Both entries are marked:
+
+`estimated: true`
+
+and excluded from the timing figures.
+
+After that, I recorded timings using my own clock.
+
+### What I can defend line by line
+
+The parts I read most deeply and can explain line by line are:
+
+* the executor
+* the scorer
+* the tolerance policy
+* the gold replay
+* `TurnState`
+* the cross-turn error risk
+
+I read those fully as they landed and recorded the reasoning behind each important decision.
+
+I also reviewed:
+
+* the Anthropic adapter's retry and caching logic
+* CLI wiring
+* most of the test suite
+
+but not to the same depth.
+
+For those areas, I reviewed the diff, reran the gate, and fixed or logged problems at checkpoints.
+
+If asked about a specific line I had not personally traced, I would say so rather than pretend otherwise.
+
+## Model choice
+
+I used:
+
+`claude-haiku-4-5-20251001`
+
+with:
+
+`temperature = 0`
+
+and pinned the model version as a literal string.
+
+Arithmetic is handled by a deterministic external tool, so the model's main jobs are:
+
+* understanding the question
+* resolving references to earlier turns
+* finding the relevant numbers
+* choosing the correct operation
+
+The model is **not responsible for doing the arithmetic itself**.
+
+This model beat FinQANet's **68.90** benchmark on the task while costing **$5.62** for the full dev split.
+
+A larger model would be the obvious next experiment.
+
+I did not run one after the dev evaluation because that would have meant either:
+
+* reporting results for a system I had not measured, or
+* running dev a second time after it had already been used.

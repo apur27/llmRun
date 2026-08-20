@@ -7,6 +7,7 @@ counts and accuracies can be checked against a hand-computed expectation.
 
 import pytest
 
+from src.adapters.ports import ProviderError
 from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
 from src.domain.results import TurnResult
@@ -184,6 +185,36 @@ def test_run_eval_catches_program_execution_error_as_parse_error() -> None:
     assert failed_turn.predicted is None
 
 
+class _RaisesProviderErrorOnSecondTurnClient:
+    """Fake client correct on turn 0, raises `ProviderError` on turn 1, correct after."""
+
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Raise on turn 1, otherwise return the gold answer for `turn_index`."""
+        if turn_index == 1:
+            raise ProviderError("exhausted retries against the Anthropic API")
+        return record.dialogue.executed_answers[turn_index]
+
+
+def test_run_eval_catches_provider_error_as_provider_error() -> None:
+    """A turn whose client raises `ProviderError` scores `provider_error`, not a crash.
+
+    The rest of the batch still completes: turns 0 and 2 are answered correctly by the same
+    fake client, proving the catch does not abort the loop for later turns or later records.
+    """
+    record = _make_record(["1.0", "2.0", "3.0"], [1.0, 2.0, 3.0])
+
+    summary = run_eval([record], _RaisesProviderErrorOnSecondTurnClient())
+
+    assert summary.total_turns == 3
+    assert summary.tolerant_correct == 2
+    failed_turn = summary.turn_results[1]
+    assert failed_turn.outcome == "incorrect"
+    assert failed_turn.reason == "provider_error"
+    assert failed_turn.predicted is None
+
+
 class _UsageTrackingClient:
     """Fake client exposing cumulative usage attributes, matching `AnthropicClient`'s shape."""
 
@@ -299,6 +330,64 @@ def test_run_eval_appends_the_predicted_answer_not_gold_to_turn_state() -> None:
     run_eval([record], client)
 
     assert client.turn_one_history == [("q", _WRONG_ANSWER)]
+
+
+class _FourOutcomesClient:
+    """Fake client producing one of each outcome/reason combination, by `turn_index`."""
+
+    def answer(
+        self, record: ConvFinQARecord, turn_index: int, turn_state: TurnState
+    ) -> float | str:
+        """Turn 0: correct. Turn 1: wrong value. Turn 2: parse error. Turn 3: provider error."""
+        if turn_index == 0:
+            return record.dialogue.executed_answers[turn_index]
+        if turn_index == 1:
+            return _WRONG_ANSWER
+        if turn_index == 2:
+            raise ProgramExecutionError("could not parse a final answer")
+        raise ProviderError("exhausted retries against the Anthropic API")
+
+
+def test_on_turn_fires_once_per_turn_with_correct_outcome_and_running_counts() -> None:
+    """`on_turn` fires exactly once per turn, in order, on every outcome/reason combination.
+
+    Covers all four paths `run_eval` can build a `TurnResult` from: correct (`ok`),
+    incorrect (`wrong_value`), `parse_error`, and `provider_error` -- each must invoke
+    `on_turn` with the same `TurnResult` appended to the summary and the running
+    `(scored_total, expected_total)` counts at that point.
+    """
+    record = _make_record(["1.0", "2.0", "3.0", "4.0"], [1.0, 2.0, 3.0, 4.0])
+    calls: list[tuple[TurnResult, int, int]] = []
+
+    summary = run_eval(
+        [record],
+        _FourOutcomesClient(),
+        on_turn=lambda turn_result, scored, expected: calls.append(
+            (turn_result, scored, expected)
+        ),
+    )
+
+    assert len(calls) == 4
+    assert [call[0].reason for call in calls] == [
+        "ok",
+        "wrong_value",
+        "parse_error",
+        "provider_error",
+    ]
+    assert [call[1] for call in calls] == [1, 2, 3, 4]
+    assert [call[2] for call in calls] == [4, 4, 4, 4]
+    assert [call[0] for call in calls] == summary.turn_results
+
+
+def test_run_eval_without_on_turn_behaves_exactly_as_before() -> None:
+    """Omitting `on_turn` (the default) runs the loop unaffected -- no callback is invoked."""
+    records = [_make_record(["1.0", "greater(1, 0)"], [1.0, "yes"])]
+
+    summary = run_eval(records, _AlwaysCorrectClient())
+
+    assert summary.total_turns == 2
+    assert summary.strict_correct == 2
+    assert summary.tolerant_correct == 2
 
 
 def test_run_eval_raises_on_turn_count_mismatch() -> None:

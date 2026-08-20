@@ -11,23 +11,51 @@ assert it: by actually driving the code down that path, never by mocking the err
 from pathlib import Path
 from typing import Any
 
+import anthropic
+import httpx
 import pytest
 from anthropic.types import Message, TextBlock, ToolUseBlock, Usage
 
+import src.adapters.anthropic_client as anthropic_client_module
 from src.adapters.anthropic_client import (
     CACHE_READ_TOKEN_RATE_USD,
+    CLIENT_TIMEOUT_SECONDS,
     INPUT_TOKEN_RATE_USD,
+    MAX_RETRIES,
     OUTPUT_TOKEN_RATE_USD,
+    SDK_MAX_RETRIES,
     AnthropicClient,
     MissingApiKeyError,
     estimate_cost_usd,
 )
+from src.adapters.ports import ProviderError
 from src.adapters.response_cache import ResponseCache
 from src.domain.executor import ProgramExecutionError
 from src.domain.models import ConvFinQARecord, Dialogue, Document, Features
 from src.services.turn_state import TurnState
 
 _USAGE = Usage(input_tokens=1, output_tokens=1)
+
+
+def _rate_limit_error() -> anthropic.RateLimitError:
+    """A real `RateLimitError` (429), shaped exactly as the SDK would raise it."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(429, request=request)
+    return anthropic.RateLimitError("rate limited", response=response, body=None)
+
+
+def _internal_server_error() -> anthropic.InternalServerError:
+    """A real `InternalServerError` (500), shaped exactly as the SDK would raise it."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(500, request=request)
+    return anthropic.InternalServerError("server error", response=response, body=None)
+
+
+def _bad_request_error() -> anthropic.BadRequestError:
+    """A real, non-retryable `BadRequestError` (400)."""
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(400, request=request)
+    return anthropic.BadRequestError("bad request", response=response, body=None)
 
 
 def _make_record(question: str = "what is the value?") -> ConvFinQARecord:
@@ -93,15 +121,20 @@ def _tool_use_message(
 
 
 class _FakeMessages:
-    """Stand-in for `anthropic.Anthropic().messages`, returning queued responses in order."""
+    """Stand-in for `anthropic.Anthropic().messages`, returning queued responses in order.
 
-    def __init__(self, responses: list[Message]) -> None:
-        """Queue `responses`, returned one per `create` call, in order."""
+    A queued item may be an `Exception` instance instead of a `Message` — `create` raises it
+    rather than returning it, so retry behaviour can be driven the same way a real transient
+    failure would.
+    """
+
+    def __init__(self, responses: list[Message | Exception]) -> None:
+        """Queue `responses`, returned (or raised) one per `create` call, in order."""
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
     def create(self, **kwargs: Any) -> Message:
-        """Record a snapshot of the call and return the next queued response.
+        """Record a snapshot of the call and return (or raise) the next queued item.
 
         `kwargs["messages"]` is the caller's own mutable list, appended to further after this
         call returns — a shallow copy is recorded so a later assertion sees the call as it was
@@ -110,18 +143,40 @@ class _FakeMessages:
         self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
         if not self._responses:
             raise AssertionError("no more fake responses queued")
-        return self._responses.pop(0)
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 class _FakeAnthropic:
     """Stand-in for `anthropic.Anthropic`, exposing only the `.messages.create` boundary used."""
 
-    def __init__(self, responses: list[Message]) -> None:
+    def __init__(self, responses: list[Message | Exception]) -> None:
         """Wrap a `_FakeMessages` queue behind the same `.messages` attribute path."""
         self.messages = _FakeMessages(responses)
 
 
-def _client_with(responses: list[Message], cache_dir: Path) -> AnthropicClient:
+class _RecordingAnthropicClass:
+    """Stand-in for the `anthropic.Anthropic` *class* itself, recording its `__init__` kwargs.
+
+    Used only by `test_from_env_constructs_sdk_client_with_bounded_timeout_and_no_sdk_retries`
+    to inspect what `from_env` actually passes when building the real SDK client — every other
+    test in this file injects an already-built fake client and never exercises this construction
+    line.
+    """
+
+    last_kwargs: dict[str, Any] | None = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Record `kwargs` on the class so the test can inspect them after construction."""
+        type(self).last_kwargs = kwargs
+        self.messages = _FakeMessages([])
+
+
+def _client_with(
+    responses: list[Message | Exception], cache_dir: Path
+) -> AnthropicClient:
     """Build an `AnthropicClient` over a fake SDK client and a `tmp_path`-backed cache."""
     fake = _FakeAnthropic(responses)
     return AnthropicClient(fake, ResponseCache(cache_dir=cache_dir))  # type: ignore[arg-type]
@@ -147,6 +202,29 @@ def test_from_env_writes_the_variable_name_to_stderr_when_unset(
         AnthropicClient.from_env()
 
     assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_from_env_constructs_sdk_client_with_bounded_timeout_and_no_sdk_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`from_env` passes explicit `timeout`/`max_retries` to `anthropic.Anthropic`.
+
+    So there is exactly one retry policy in effect (`_create_with_retry`'s, not the SDK's own
+    invisible internal one stacked underneath it) and a single hung call is bounded, rather than
+    inheriting the SDK's own defaults (`max_retries=2`, `timeout` up to 600s per leg).
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr(
+        anthropic_client_module.anthropic, "Anthropic", _RecordingAnthropicClass
+    )
+
+    AnthropicClient.from_env()
+
+    assert _RecordingAnthropicClass.last_kwargs == {
+        "api_key": "fake-key-for-test",
+        "timeout": CLIENT_TIMEOUT_SECONDS,
+        "max_retries": SDK_MAX_RETRIES,
+    }
 
 
 def test_answer_returns_parsed_float_from_final_text(tmp_path: Path) -> None:
@@ -435,3 +513,126 @@ def test_answer_with_different_turn_state_history_does_not_hit_the_same_cache_en
     assert result_a == 1.0
     assert result_b == 2.0
     assert len(client._client.messages.calls) == 2  # type: ignore[attr-defined]
+
+
+def test_answer_is_identical_with_and_without_retry_wrapper_on_first_try_success(
+    tmp_path: Path,
+) -> None:
+    """A turn that succeeds on the first call is unaffected by the retry wrapper: same result,
+    exactly one SDK call, no sleep. Proves retry is invisible on the success path -- it must
+    never alter an answer that would have succeeded without it."""
+    client = _client_with([_text_message("ANSWER: 42.0")], tmp_path)
+
+    result = client.answer(_make_record(), 0, TurnState())
+
+    assert result == 42.0
+    assert len(client._client.messages.calls) == 1  # type: ignore[attr-defined]
+
+
+def test_answer_retries_once_after_a_retryable_error_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rate-limit error on the first call is retried, and the second call's answer wins."""
+    monkeypatch.setattr(anthropic_client_module.time, "sleep", lambda s: None)
+    client = _client_with([_rate_limit_error(), _text_message("ANSWER: 5.0")], tmp_path)
+
+    result = client.answer(_make_record(), 0, TurnState())
+
+    assert result == 5.0
+    assert len(client._client.messages.calls) == 2  # type: ignore[attr-defined]
+
+
+def test_answer_raises_provider_error_after_retries_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retryable errors on every attempt up to `MAX_RETRIES` raise `ProviderError`, not hang."""
+    monkeypatch.setattr(anthropic_client_module.time, "sleep", lambda s: None)
+    client = _client_with(
+        [_internal_server_error() for _ in range(MAX_RETRIES)], tmp_path
+    )
+
+    with pytest.raises(ProviderError):
+        client.answer(_make_record(), 0, TurnState())
+
+    assert len(client._client.messages.calls) == MAX_RETRIES  # type: ignore[attr-defined]
+
+
+def test_resume_replays_already_cached_turns_with_zero_new_sdk_calls(
+    tmp_path: Path,
+) -> None:
+    """A "resumed" client, sharing the same on-disk cache, never re-bills already-answered turns.
+
+    Simulates a run that died after 2 turns and is resumed: `client_a` drives 2 real turns
+    (2 real SDK calls, both cached). `client_b` stands in for the resumed process -- a *fresh*
+    fake SDK queued with only 1 response (deliberately: zero responses available for turns 0/1,
+    so the fake would `AssertionError` if `client_b` ever called the SDK for either of them) --
+    over the *same* `ResponseCache(cache_dir=tmp_path)` directory `client_a` just wrote to.
+    Replaying the identical conversation from scratch must return bit-identical answers for
+    turns 0/1 purely from cache, and only the new turn 2 may touch the network.
+    """
+    record = _make_record()
+    record = record.model_copy(
+        update={
+            "dialogue": record.dialogue.model_copy(
+                update={
+                    "conv_questions": [
+                        "what was the value in 2007?",
+                        "what was it in 2008?",
+                        "what was that in 2009?",
+                    ],
+                    "conv_answers": ["1.0", "2.0", "3.0"],
+                    "turn_program": ["1.0", "2.0", "3.0"],
+                    "executed_answers": [1.0, 2.0, 3.0],
+                    "qa_split": [False, False, False],
+                }
+            )
+        }
+    )
+    questions = record.dialogue.conv_questions
+    shared_cache = ResponseCache(cache_dir=tmp_path)
+
+    # "The run before it died": 2 real SDK calls made, both cached.
+    client_a = _client_with(
+        [_text_message("ANSWER: 100.0"), _text_message("ANSWER: 200.0")], tmp_path
+    )
+    turn_state_a = TurnState()
+    ans0 = client_a.answer(record, 0, turn_state_a)
+    turn_state_a.add(questions[0], ans0)
+    ans1 = client_a.answer(record, 1, turn_state_a)
+
+    # "Resume": a fresh fake SDK with only 1 response queued (for the new turn 2 only) --
+    # if turns 0/1 ever reach the SDK, `_FakeMessages.create` raises `AssertionError`.
+    fake_b = _FakeAnthropic([_text_message("ANSWER: 300.0")])
+    client_b = AnthropicClient(fake_b, shared_cache)  # type: ignore[arg-type]
+    turn_state_b = TurnState()
+    ans0_replay = client_b.answer(record, 0, turn_state_b)
+    turn_state_b.add(questions[0], ans0_replay)
+    ans1_replay = client_b.answer(record, 1, turn_state_b)
+    turn_state_b.add(questions[1], ans1_replay)
+    ans2 = client_b.answer(record, 2, turn_state_b)
+
+    assert ans0_replay == ans0 == 100.0
+    assert ans1_replay == ans1 == 200.0
+    assert ans2 == 300.0
+    assert len(fake_b.messages.calls) == 1
+
+
+def test_answer_propagates_non_retryable_error_without_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-retryable error (e.g. `BadRequestError`) propagates as itself, on the first attempt."""
+
+    def _sleep_should_not_be_called(seconds: float) -> None:
+        raise AssertionError(
+            "time.sleep should never be called for a non-retryable error"
+        )
+
+    monkeypatch.setattr(
+        anthropic_client_module.time, "sleep", _sleep_should_not_be_called
+    )
+    client = _client_with([_bad_request_error()], tmp_path)
+
+    with pytest.raises(anthropic.BadRequestError):
+        client.answer(_make_record(), 0, TurnState())
+
+    assert len(client._client.messages.calls) == 1  # type: ignore[attr-defined]

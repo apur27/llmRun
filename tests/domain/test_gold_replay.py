@@ -57,7 +57,7 @@ def test_dev_gold_replay_agrees_with_executed_answers_within_tolerance() -> None
     for record in dev_records:
         dialogue = record.dialogue
         for turn_index, (program, gold) in enumerate(
-            zip(dialogue.turn_program, dialogue.executed_answers)
+            zip(dialogue.turn_program, dialogue.executed_answers, strict=True)
         ):
             computed = execute_program(program)
             if isinstance(gold, str):

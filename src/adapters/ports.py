@@ -12,6 +12,17 @@ from src.domain.models import ConvFinQARecord
 from src.services.turn_state import TurnState
 
 
+class ProviderError(Exception):
+    """Raised when a model client's underlying API call fails and cannot be recovered.
+
+    Distinct from `ProgramExecutionError` (a parseable-but-wrong response): this is the
+    provider itself failing (rate limit, server error, timeout) after a client's own bounded
+    retry is exhausted. Lives here, not in a concrete adapter module, so `src/services` can
+    catch it without importing `src.adapters.anthropic_client` or the `anthropic` SDK --
+    same layering rule `ModelClient` itself follows.
+    """
+
+
 class ModelClient(Protocol):
     """Anything that can answer one turn of a ConvFinQA conversation."""
 
