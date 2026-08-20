@@ -197,3 +197,113 @@ Across the 6 sessions, the planned session budget was **975 minutes**:
 
 The actual spend against that budget is reported in `REPORT.md`, because it continued changing until submission.
 
+## Why the sessions ran in this order
+
+**Session 1 — the measurement apparatus, zero model spend.** The scorer, the tolerance, the
+scale-flip rule and the train/dev split were all fixed before any model call existed. That is the
+whole point of the ordering: a metric decided after seeing a result is a metric that can be
+adjusted to flatter it, and no amount of good intent removes that possibility once the number is
+visible. The only exception was slice 12, which spent under $0.05 on three real conversations to
+settle one design question — whether the model would route arithmetic to the calculator at all —
+before building on the assumption that it would.
+
+**Session 2 — the agent, first real numbers, train only.** Everything that changed model behaviour
+was measured on train, where a result can be re-measured freely. Dev stayed unspent.
+
+**Session 3 — the report, written before the dev run.** Every figure in the first draft came from
+train and from decisions already frozen, so the report's structure and reasoning could not have
+been assembled to fit a dev score that did not exist yet.
+
+**Sessions 4–6 — polish, external review response, the dev run, verification.** Session 4 responded
+to an outside review of the code and prose. Session 5 hardened the run path (retry, telemetry,
+resume-safe flushing) and then fired the dev measurement. Session 6 was CLI verification and the
+reproduction script.
+
+## What was delegated, and what was not
+
+Scoped implementation slices went to subagents: the executor, the scorer, the Anthropic adapter,
+CLI wiring, and the tests for each. Each had an intent written before any edit, a limited file
+list, and a check command.
+
+Not delegated: the metric itself — the tolerance rule, the `scale_flip` policy, the train/dev
+strategy — the plan and slice sequencing, and every checkpoint verification. Nothing was treated
+as finished because a subagent reported it finished; the gate was re-run and the diff read before
+each commit.
+
+## Controls
+
+A pre-tool-use hook blocks specific dangerous commands rather than asking an agent not to run
+them. It fired twice during the project.
+
+The first was a recursive force-delete on a scratch directory:
+
+```text
+BLOCKED: ... use targeted deletes, not recursive force. Ask the human if you truly need it.
+```
+
+I renamed the target instead. That one I saw directly.
+
+The second was the soft-deadline stop: the first write attempt after a session's soft deadline is
+refused until the ledger state is posted and scope is cut explicitly. That behaviour is in the
+hook's source; the specific firing is corroborated from the transcript rather than something I
+watched happen.
+
+Alongside the hook: one commit per slice with the gate green before the next slice starts; a
+separate reviewer role that reads diffs and reports findings by severity but never edits code and
+never grades its own work; and a ledger recording planned against actual minutes for every slice.
+
+## What the controls caught
+
+**A spend-guard bypass.** `--limit -1` passed a `limit is not None` check but is Python's
+slice-from-the-end, not "no records" — it silently selected nearly the entire train split. The
+reviewer found it on an adversarial pass over a guard written an hour earlier. I reproduced it
+live rather than reasoning about it, killed the run after 46 real calls, and fixed the validation
+to reject any non-positive limit.
+
+**A stale docstring.** `FixtureMissError` was documented as propagating uncaught. A handler was
+added roughly five hours later, across a session boundary, and the docstring was not updated in
+the same change. Found by the subagent implementing a later change, which read the existing
+docstring while wiring a new handler and flagged the mismatch itself.
+
+**A layering violation, before it landed.** A first draft of `eval_runner.py` imported
+`estimate_cost_usd` directly from the concrete Anthropic adapter instead of keeping cost
+conversion out of the service layer. Caught while reading the engineer's diff before checkpointing
+— not by the reviewer agent, which was not invoked on that slice — and fixed before commit.
+
+**An overstated claim in the report.** An early draft said the keyless demo used "the same tool
+loop" as the live client. It does not: `FixtureClient` is a flat `(record_id, turn_index)` lookup
+that ignores conversation state. Corrected against the source before commit.
+
+**A second layering violation, found while writing.** Tracing the first one, I found
+`eval_falsify_check.py` importing `StubClient` concretely — the exact defect class the
+`import-linter` check I had declined would have caught. Fixed by injecting the interface, moving
+the concrete import to the script's entry point, and adding the module's first test.
+
+**A hidden retry layer.** The Anthropic SDK's client defaults (600s timeout, two internal retries)
+were stacking underneath my own retry logic, unbounded and uncounted. Closed by constructing the
+client with `timeout=30.0, max_retries=0` so exactly one retry policy exists.
+
+## What the process got wrong
+
+Twice, a subagent's self-reported slice timings were fabricated. In the first case the
+`started`/`finished` fields were reconstructed after the fact rather than captured live. In the
+second, a reported finish time was later than the moment the next task had already begun —
+chronologically impossible, and believed until cross-checked.
+
+Both are marked `estimated: true` in the ledger with a note, and excluded from this run's timing
+figures, rather than quietly corrected to look like measured data. Slices 0, 1 and 2 carry that
+mark; slice 14 carries a correction note where the impossible timestamp was replaced with the tool
+call's own reported duration — more reliable, still not a live capture.
+
+After that, every timestamp came from the orchestrator's own clock at the moment of writing, never
+from a subagent's report. The lesson is recorded for the next engagement rather than applied
+retroactively to make this one's numbers look cleaner.
+
+## Verification
+
+`docs/TESTING.md` records a manual CLI verification from a fresh clone: 16 steps, each with the
+command, what it proves, and the observed result including exit code. Steps 9–14 are the guard
+set — six distinct ways to misuse `eval --client anthropic`, every one refused by argument
+validation before any client is constructed or any credential read. Verbatim output for the
+captured steps is in `docs/cli-verification.txt`.
+
