@@ -234,15 +234,21 @@ def _build_on_turn(
     start: float,
     out_handle: Optional[TextIO],  # noqa: UP045 -- see --limit's own note above
     cost_cap: Optional[float],  # noqa: UP045 -- see --limit's own note above
+    show_progress: bool = True,  # noqa: FBT001, FBT002 -- see eval's docstring, repo has no FBT gate
 ) -> Callable[[TurnResult, int, int], None]:
     """Build the `on_turn` callback `eval` passes to `run_eval`.
 
     Closes over `model_client` (read live for its own cumulative usage attributes, the same
     `getattr(..., 0)` defaulting `eval_runner._read_cumulative_usage` already uses), `start`
     (the wall-clock origin for the elapsed/projected-remaining line), `out_handle` (already
-    open, or `None` when `--out` was not given), and `cost_cap` (the one-time warning
-    threshold, or `None` to never warn). Never aborts the run itself -- the cost cap is a
-    warning, not a limit.
+    open, or `None` when `--out` was not given), `cost_cap` (the one-time warning threshold,
+    or `None` to never warn), and `show_progress` (whether to print the per-turn progress
+    line and the every-100th-turn elapsed/projected line at all -- `eval` sets this to
+    `False` for `--client stub`, a zero-cost smoke test the progress machinery has no
+    purpose against; it stays `True` for a real, billed `--client anthropic` run, so pace
+    and spend are still visible as the run happens). `--out` writes and the `--cost-cap`
+    warning are unconditional regardless of `show_progress`. Never aborts the run itself --
+    the cost cap is a warning, not a limit.
     """
     cap_warned = False
 
@@ -257,18 +263,19 @@ def _build_on_turn(
             getattr(model_client, "cumulative_cache_creation_tokens", 0),
             getattr(model_client, "cumulative_cache_read_tokens", 0),
         )
-        rich_print(
-            f"[{scored_total}/{expected_total}] {turn_result.outcome} "
-            f"({turn_result.reason}) -- cost so far: ${cost:.4f}"
-        )
-        if scored_total % _PROGRESS_INTERVAL_TURNS == 0:
-            elapsed = time.monotonic() - start
-            rate = elapsed / scored_total
-            projected_remaining = rate * (expected_total - scored_total)
+        if show_progress:
             rich_print(
-                f"[{scored_total}/{expected_total}] elapsed {elapsed:.0f}s, "
-                f"projected remaining {projected_remaining:.0f}s"
+                f"[{scored_total}/{expected_total}] {turn_result.outcome} "
+                f"({turn_result.reason}) -- cost so far: ${cost:.4f}"
             )
+            if scored_total % _PROGRESS_INTERVAL_TURNS == 0:
+                elapsed = time.monotonic() - start
+                rate = elapsed / scored_total
+                projected_remaining = rate * (expected_total - scored_total)
+                rich_print(
+                    f"[{scored_total}/{expected_total}] elapsed {elapsed:.0f}s, "
+                    f"projected remaining {projected_remaining:.0f}s"
+                )
         if out_handle is not None:
             out_handle.write(json.dumps(dataclasses.asdict(turn_result)) + "\n")
             out_handle.flush()
@@ -329,18 +336,23 @@ def eval(
     nothing -- opened in write/truncate mode once at the start, so a resumed run (same
     path, same records, same cache dir) overwrites a prior partial file cleanly rather than
     duplicating lines already written before a crash. `--cost-cap USD` prints one one-time
-    warning the first time cumulative estimated cost crosses it -- it never aborts the run.
-    Progress (one line per turn, plus elapsed/projected-remaining every 100th turn) prints
-    regardless of `--out`, so pace and spend are visible on the terminal as the run happens,
-    not only in the final summary below.
+    warning the first time cumulative estimated cost crosses it -- it never aborts the run,
+    and this warning is unconditional regardless of `--out` or `--client`. Progress (one
+    line per turn, plus elapsed/projected-remaining every 100th turn) prints only against
+    `--client anthropic`, a real, billed run where pacing on the terminal matters --
+    `--client stub` is a zero-cost, always-wrong smoke test the progress machinery has no
+    purpose against, so it prints only the final summary below.
     """
     dataset = load_dataset(DATA_PATH)
     records = _resolve_records(dataset, client, split, limit, confirm_dev_run)
     model_client = _build_client(client)
+    show_progress = client == "anthropic"
 
     start = time.monotonic()
     with _open_out(out) as out_handle:
-        on_turn = _build_on_turn(model_client, start, out_handle, cost_cap)
+        on_turn = _build_on_turn(
+            model_client, start, out_handle, cost_cap, show_progress=show_progress
+        )
         summary = run_eval(records, model_client, on_turn=on_turn)
 
     rich_print(f"total turns: {summary.total_turns}")

@@ -1,6 +1,7 @@
 """End-to-end tests for the `main` CLI, the documented entry point (`uv run main ...`)."""
 
 import importlib
+import io
 import json
 import time
 from pathlib import Path
@@ -53,6 +54,23 @@ def test_eval_default_invocation_uses_train_not_dev() -> None:
     assert f"total turns: {EXPECTED_TOTAL_TURN_COUNT}" not in result.stdout
     assert f"/{EXPECTED_TOTAL_TURN_COUNT})" not in result.stdout
     assert "0/1490" not in result.stdout
+
+
+def test_eval_stub_client_prints_summary_but_no_per_turn_progress() -> None:
+    """`--client stub` (a zero-cost, always-wrong smoke test) suppresses per-turn progress.
+
+    The documented keyless reviewer command (`uv run main eval --client stub`) must stay
+    readable: the final summary lines are still present, but the per-turn progress line
+    (which exists to pace a long, billed `--client anthropic` run) has no purpose here and
+    must not print.
+    """
+    result = runner.invoke(app, ["eval", "--client", "stub", "--limit", "1"])
+
+    assert result.exit_code == 0
+    assert "total turns:" in result.stdout
+    assert "strict accuracy:" in result.stdout
+    assert "-- cost so far:" not in result.stdout
+    assert "elapsed" not in result.stdout
 
 
 def test_eval_rejects_an_unsupported_client() -> None:
@@ -286,6 +304,36 @@ def test_build_on_turn_never_warns_when_cost_cap_is_none(
     assert "COST CAP CROSSED" not in capsys.readouterr().out
 
 
+def test_build_on_turn_show_progress_false_suppresses_progress_and_elapsed_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`show_progress=False` prints nothing per-turn, but `--out`/`--cost-cap` still fire.
+
+    Proves the `show_progress` gate wraps only the per-turn progress and elapsed/projected
+    lines, leaving `--out` file writes and the `--cost-cap` warning -- both unconditional --
+    completely untouched.
+    """
+    client = _UsageStandInClient()
+    client.cumulative_input_tokens = 10_000  # cost $0.01 >= $0.001 cap
+    out_handle = io.StringIO()
+    on_turn = _build_on_turn(
+        client,
+        start=time.monotonic(),
+        out_handle=out_handle,
+        cost_cap=0.001,
+        show_progress=False,
+    )
+
+    for scored in range(1, 101):  # crosses the 100th-turn elapsed/projected boundary
+        on_turn(_turn_result(scored - 1), scored, 500)
+
+    output = capsys.readouterr().out
+    assert "cost so far" not in output
+    assert "elapsed" not in output
+    assert output.count("COST CAP CROSSED") == 1
+    assert len(out_handle.getvalue().splitlines()) == 100
+
+
 class _FakeChatClient:
     """A `ModelClient` returning one canned answer per turn index, for `chat`'s CLI test."""
 
@@ -482,6 +530,26 @@ def test_eval_client_anthropic_constructs_the_real_client_type(
 
     assert result.exit_code == 0
     assert built.get("called") is True
+
+
+def test_eval_client_anthropic_still_prints_per_turn_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--client anthropic` keeps the per-turn progress line -- only `stub` suppresses it.
+
+    A real, billed run still needs pacing on the terminal; the suppression added for the
+    keyless `stub` reviewer command must not silently remove it here too.
+    """
+    monkeypatch.setattr(
+        main_module.AnthropicClient,
+        "from_env",
+        classmethod(lambda _cls: _FakeAnthropicEvalClient()),
+    )
+
+    result = runner.invoke(app, ["eval", "--client", "anthropic", "--limit", "1"])
+
+    assert result.exit_code == 0
+    assert "-- cost so far:" in result.stdout
 
 
 def test_eval_client_anthropic_exits_cleanly_with_no_api_key(
