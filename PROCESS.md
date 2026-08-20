@@ -18,6 +18,11 @@ corrected using the tool call's own reported duration — closer, but still not 
 **The reverted slice.** `n=3` was stopped before any file was written, to fix the timing issue
 above — listed below as reverted, not omitted; redone cleanly as `n=4`.
 
+**The skipped slice.** `n=35` was cut, not built — a nice-to-have header line for the eval
+summary, dropped because the split it would have named is already visible another way
+(`--split` on the invocation, the denominators in this report). Listed below with its reason,
+not omitted.
+
 ## Session 1 — building what measures accuracy (slices 0–12)
 
 Zero spend was the goal, so the metric could be frozen before any model existed to tune it
@@ -75,22 +80,40 @@ yet.
 | 25 | report | Future Work + AI-tool disclosure. | none — reporting slice | 25 | 3 |
 | 26 | fix | Pre-merge fixes: verify a disclosure claim, strip template scaffolding. | Guard-denial claim checked against a real transcript, kept; a second instance added. | 15 | 1 |
 
-## Session 4 — polish and submission (in progress)
-
-Not counted in `REPORT.md`'s "27 slices across 3 sessions," which describes the three-session
-build on purpose. This table includes session 4 anyway, for completeness.
+## Session 4 — polish, and a response to outside review (slices 27–29)
 
 | n | type | intent | decision | planned | actual |
 |---|---|---|---|---|---|
-| 27 | report | Expand the disclosure with a checked count and session-ordering reasoning; add this file; scrub the internal tool's name from both. | none — documentation slice | 25 | 4 |
-| 28 | measurement | Remove the prompt's percentage exception (wrong against gold on 13.9% of dev) and re-run the slice-14 A/B to confirm before landing it. | Removed either way; the re-run also confirmed improvement (17.5%→30.0%, scale_flip 9.2%→0%, p=0.000275). | not pre-planned | 11 |
-| 29 | report | Rewrite `REPORT.md`/`PROCESS.md` for plain language — same content and numbers. | none — register pass, no new facts | not pre-planned | pending |
+| 27 | report | Expand the disclosure with a checked count and session-ordering reasoning; add this file. | none — documentation slice | 25 | 4 |
+| 28 | measurement | Remove the prompt's percentage exception (wrong against gold on 13.9% of dev) and re-run the slice-14 A/B to confirm before landing it. | Removed either way; the re-run also confirmed improvement (17.5%→30.0%, scale_flip 9.2%→0%, p=0.000275). | not pre-planned | 12 |
+| 29 | report | Rewrite `REPORT.md`/`PROCESS.md` for plain language — same content and numbers. | none — register pass, no new facts | not pre-planned | 11 |
+
+## Session 5 — the dev run (slices 30–33)
+
+| n | type | intent | decision | planned | actual |
+|---|---|---|---|---|---|
+| 30 | code | Bounded retry-with-backoff around `messages.create` for transient failures (429/5xx); non-transient fails fast. | New `provider_error` reason, denominator retained, loop continues. | 25 | 4 |
+| 31 | code | Close a double-retry gap: the SDK's own client defaults (600s timeout, 2 internal retries) stacked underneath ours, unbounded and uncounted. | Explicit `timeout=30.0, max_retries=0` on client construction — exactly one retry policy, ours. | 15 | 2 |
+| 32 | code | `on_turn` progress callback; `--out` flush-to-disk with resume-safe truncate-at-start; `--cost-cap` one-time warning. | Verified with a real cache-replay resume test, not just design intent. | 30 | 14 |
+| 33 | measurement | THE dev run: 421 conversations / 1490 turns, `--client anthropic --confirm-dev-run`, frozen from the moment it fired. | Completed clean: 3143s, $5.6207 of a $25 cap, no crash, no cap warning, no `provider_error`. | not pre-planned | 52 |
+
+## Session 6 — verification (slices 34–35)
+
+| n | type | intent | decision | planned | actual |
+|---|---|---|---|---|---|
+| 34 | fix | Suppress eval's per-turn progress lines when the client isn't the real Anthropic one — reviewer-experience only. | `--out`/`--cost-cap` stay unconditional; verified `--client stub` output drops from 11,105 lines to 5. | 15 | 7 |
+| 35 | fix | Add a header line to eval's summary naming split/client/turn-count, so a reviewer can't confuse a train run's total with dev's 1490. | Cut, not deferred — the split is already visible via the invocation and this report's stated denominators. | 8 | 4 |
 
 ## Totals
 
-29 ledger rows across four sessions (26 landed as commits + 1 reverted in sessions 1–3, plus 3
-more in session 4). Sessions 1–3: 28 commits, fixed since that work is done (see `REPORT.md`'s
-disclosure). Session 4 is still in progress, so its commit count isn't fixed here — it would
-go stale the moment another slice lands; `git rev-list --count main..HEAD` is the live figure.
-A few slices produced a small follow-on commit for a fix that surfaced right after landing,
-noted individually rather than folded into a single commit's diff.
+36 ledger rows across six sessions: 34 landed as commits, one reverted before any file was
+written (`n=3`, redone as `n=4`), one skipped with no product-code edit (`n=35`). 42 commits on
+this branch for that work, plus an occasional follow-on commit for a fix that surfaced right
+after landing (noted individually, not folded into a later diff) — `git rev-list --count
+main..HEAD` gives the live figure, since it keeps growing before submission. The gate ran green
+before every one of those commits; I re-ran it myself each time, never took a subagent's word
+for it.
+
+975 minutes of session budget across the six sessions (150, 150, 150, 120, 360, 45). Real spend
+against that budget is in the disclosure in `REPORT.md`, not repeated here since it's a
+still-growing figure right up to submission.
