@@ -1,4 +1,4 @@
-.PHONY: check check-clean eval-falsify recompute-dev
+.PHONY: check check-clean eval-falsify recompute-dev harness-check
 
 # Full gate: format, lint (no auto-fix), types, tests, entry point.
 # Their pyproject sets [tool.ruff] fix = true, so a bare `ruff check` would rewrite
@@ -9,6 +9,12 @@ check:
 	uv run mypy
 	uv run pytest --cov=src --cov-fail-under=0 || test $$? -eq 5
 	uv run main --help
+# Both targets existed and neither was in the gate. During a falsification run this
+# target went green while a skill carried a forbidden hooks: field and REPORT.md stated
+# a figure its own artifact contradicted. harness-check catches the first; recompute-dev
+# re-derives every reported figure from results/dev_results.jsonl and catches the second.
+	$(MAKE) harness-check
+	$(MAKE) recompute-dev
 
 # Same steps, intended to be run from a hermetic environment (fresh clone, env -i,
 # temp HOME, uv sync). This target does not build that wrapper itself — it is an

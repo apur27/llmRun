@@ -21,6 +21,12 @@ Requires the `mcp` package, which is an optional extra rather than a core depend
     uv add --optional mcp mcp
 """
 
+# ruff: noqa: T201
+# T201 bans bare print in src/, where rich_print is the convention. This module runs
+# standalone -- `--selftest` and `--check-imports` are invoked by test/harness_check.py
+# under plain python3, and the error path must report before any optional dependency is
+# known to exist. Scoped to this file and to T201 only.
+
 from __future__ import annotations
 
 import json
@@ -117,7 +123,9 @@ def selftest() -> int:
     checks.append(("execute_program", got.get("ok") is True, repr(got)))
 
     bad = tool_execute_program("nonsense(")
-    checks.append(("execute_program rejects malformed", bad.get("ok") is False, repr(bad)))
+    checks.append(
+        ("execute_program rejects malformed", bad.get("ok") is False, repr(bad))
+    )
 
     # Assert on ScoreResult's real fields. An earlier version of this tool used
     # getattr(result, "outcome", None), which returned None for a field that does not exist
@@ -126,7 +134,8 @@ def selftest() -> int:
     checks.append(
         (
             "score_turn exact",
-            exact == {"strict_correct": True, "tolerant_correct": True, "scale_flip": False},
+            exact
+            == {"strict_correct": True, "tolerant_correct": True, "scale_flip": False},
             repr(exact),
         )
     )
@@ -154,7 +163,9 @@ def selftest() -> int:
 
     # A yes/no gold is compared as a string, never coerced.
     yes = tool_score(predicted="yes", gold="yes")
-    checks.append(("yes/no scored as string", yes["tolerant_correct"] is True, repr(yes)))
+    checks.append(
+        ("yes/no scored as string", yes["tolerant_correct"] is True, repr(yes))
+    )
 
     index = _gold_index()
     checks.append(("gold index built", len(index) == 421, f"{len(index)} records"))
@@ -162,7 +173,9 @@ def selftest() -> int:
     checks.append(("gold turns", total_turns == 1490, f"{total_turns} turns"))
 
     missing = tool_gold_turn("does-not-exist", 0)
-    checks.append(("unknown record is clean", missing.get("ok") is False, repr(missing)))
+    checks.append(
+        ("unknown record is clean", missing.get("ok") is False, repr(missing))
+    )
 
     failed = 0
     for name, ok, detail in checks:
@@ -200,7 +213,10 @@ def main() -> int:
         # Report the actual exception. An earlier version printed "the mcp package is not
         # installed" for any ImportError, which was wrong and actively misleading the day the
         # SDK renamed a class -- the package was installed, the message said otherwise.
-        print(f"cannot load the MCP server class: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"cannot load the MCP server class: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         print(
             "\nif the package is genuinely absent, it is an optional extra:\n"
             "    uv add --optional mcp mcp",
@@ -209,7 +225,9 @@ def main() -> int:
         return 3
 
     if "--check-imports" in sys.argv:
-        print(f"ok    MCP SDK {generation}: {server_class.__module__}.{server_class.__name__}")
+        print(
+            f"ok    MCP SDK {generation}: {server_class.__module__}.{server_class.__name__}"
+        )
         return 0
 
     server = server_class("convfinqa-domain")

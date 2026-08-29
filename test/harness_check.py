@@ -17,6 +17,13 @@ is the whole reason this file exists: the silent ones are the ones a test has to
     /mcp                    # in a session -- server status and tool discovery
 """
 
+# ruff: noqa: T201
+# T201 bans bare print in src/, where rich_print is the convention. This file is a
+# standalone verification script: it must run under plain `python3` with no third-party
+# imports, because it verifies the scaffolding of the environment it runs in. Importing
+# rich to satisfy a lint rule would make the checker depend on what it is checking.
+# Scoped to this file and to T201 only -- not a blanket suppression.
+
 from __future__ import annotations
 
 import json
@@ -28,9 +35,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # From the harness reference, all documented limits:
-CLAUDE_MD_TARGET_LINES = 200  # "target under 200 lines"; guidance, not enforced by the harness
+CLAUDE_MD_TARGET_LINES = (
+    200  # "target under 200 lines"; guidance, not enforced by the harness
+)
 SKILL_BODY_MAX_LINES = 500  # "body should stay under 500 lines"
-LISTING_TRUNCATION = 1536  # description + when_to_use truncated at 1,536 chars in the listing
+LISTING_TRUNCATION = (
+    1536  # description + when_to_use truncated at 1,536 chars in the listing
+)
 MAX_IMPORT_DEPTH = 4  # "maximum depth four hops"
 
 # A project skill's allowed-tools applies even in an untrusted folder, and a hooks: field
@@ -43,14 +54,17 @@ notes: list[str] = []
 
 
 def fail(msg: str) -> None:
+    """Record a defect that must be fixed. Any failure exits non-zero."""
     failures.append(msg)
 
 
 def warn(msg: str) -> None:
+    """Record something worth a human decision. Warnings do not fail the check."""
     warnings.append(msg)
 
 
 def note(msg: str) -> None:
+    """Record what was discovered, so a passing run still shows its working."""
     notes.append(msg)
 
 
@@ -75,7 +89,9 @@ def check_instruction_file() -> None:
     candidates = [ROOT / "CLAUDE.md", ROOT / ".claude" / "CLAUDE.md"]
     found = [p for p in candidates if p.exists()]
     if not found:
-        fail("no CLAUDE.md at ./CLAUDE.md or ./.claude/CLAUDE.md — agents open this repo blind")
+        fail(
+            "no CLAUDE.md at ./CLAUDE.md or ./.claude/CLAUDE.md — agents open this repo blind"
+        )
         return
     if len(found) == 2:
         # Discovery is walk-up-and-concatenate, not nearest-wins: both would load.
@@ -105,7 +121,9 @@ def check_instruction_file() -> None:
 def check_imports(path: Path, depth: int, seen: set[Path]) -> None:
     """Follow @path imports. Depth cap 4; outside-repo imports show an approval dialog once."""
     if depth > MAX_IMPORT_DEPTH:
-        fail(f"{path.relative_to(ROOT)}: import chain deeper than {MAX_IMPORT_DEPTH} hops")
+        fail(
+            f"{path.relative_to(ROOT)}: import chain deeper than {MAX_IMPORT_DEPTH} hops"
+        )
         return
     if path in seen:
         return
@@ -144,7 +162,9 @@ def check_skills() -> None:
     found = 0
     for child in sorted(skills_dir.iterdir()):
         if not child.is_dir():
-            warn(f".claude/skills/{child.name} is not a directory — it will not be discovered")
+            warn(
+                f".claude/skills/{child.name} is not a directory — it will not be discovered"
+            )
             continue
         skill = child / "SKILL.md"
         if not skill.exists():
@@ -165,7 +185,9 @@ def check_skills() -> None:
                 f"directory, so this is /{child.name}. The name field is a display label here."
             )
 
-        listing = len(fields.get("description", "")) + len(fields.get("when_to_use", ""))
+        listing = len(fields.get("description", "")) + len(
+            fields.get("when_to_use", "")
+        )
         if listing > LISTING_TRUNCATION:
             warn(
                 f"/{child.name}: description + when_to_use is {listing} chars, truncated at "
@@ -188,7 +210,9 @@ def check_skills() -> None:
                     "Remove it, or have a human explicitly approve it."
                 )
 
-    note(f"{found} skill(s): {', '.join(p.name for p in sorted(skills_dir.iterdir()) if p.is_dir())}")
+    note(
+        f"{found} skill(s): {', '.join(p.name for p in sorted(skills_dir.iterdir()) if p.is_dir())}"
+    )
 
 
 def check_agents() -> None:
@@ -203,7 +227,9 @@ def check_agents() -> None:
             if not fields.get(required):
                 fail(f".claude/agents/{path.name}: no {required} in frontmatter")
         if "hooks" in fields:
-            fail(f".claude/agents/{path.name}: carries a hooks field — runs on the opener's machine")
+            fail(
+                f".claude/agents/{path.name}: carries a hooks field — runs on the opener's machine"
+            )
     note(f"{len(list(agents_dir.glob('*.md')))} agent(s)")
 
 
@@ -227,11 +253,15 @@ def check_mcp() -> None:
     secret = re.compile(r"(sk-|ghp_|Bearer\s+[A-Za-z0-9])", re.I)
     for name, spec in servers.items():
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-            fail(f".mcp.json: server name {name!r} — only letters, numbers, hyphens, underscores")
+            fail(
+                f".mcp.json: server name {name!r} — only letters, numbers, hyphens, underscores"
+            )
 
         blob = json.dumps(spec)
         if secret.search(blob):
-            fail(f".mcp.json: server {name!r} looks like it contains a literal credential")
+            fail(
+                f".mcp.json: server {name!r} looks like it contains a literal credential"
+            )
 
         url = spec.get("url")
         if url:
@@ -246,7 +276,9 @@ def check_mcp() -> None:
             if ":-" not in var:
                 fail(
                     f".mcp.json: server {name!r} uses ${{{var}}} with no default. In a "
-                    "project-scoped entry that expands empty — use ${" + var + ":-.} or similar."
+                    "project-scoped entry that expands empty — use ${"
+                    + var
+                    + ":-.} or similar."
                 )
 
         command = spec.get("command")
@@ -258,10 +290,14 @@ def check_mcp() -> None:
                 if isinstance(a, str) and a.endswith(".py") and not (ROOT / a).exists()
             ]
             for missing in local:
-                fail(f".mcp.json: server {name!r} points at {missing}, which does not exist")
+                fail(
+                    f".mcp.json: server {name!r} points at {missing}, which does not exist"
+                )
             note(f".mcp.json: {name} = stdio, {command} {args}")
 
-    note("project MCP config prompts for approval on first load — that dialog is a feature")
+    note(
+        "project MCP config prompts for approval on first load — that dialog is a feature"
+    )
 
 
 def check_mcp_server_runs() -> None:
@@ -283,7 +319,9 @@ def check_mcp_server_runs() -> None:
         timeout=120,
     )
     if proc.returncode != 0:
-        fail(f"mcp_server selftest failed (exit {proc.returncode}):\n{proc.stdout}{proc.stderr}")
+        fail(
+            f"mcp_server selftest failed (exit {proc.returncode}):\n{proc.stdout}{proc.stderr}"
+        )
     else:
         note("mcp_server selftest passed")
 
@@ -301,12 +339,15 @@ def check_mcp_server_runs() -> None:
             f"Reported: {imports.stderr.strip().splitlines()[0] if imports.stderr.strip() else 'no detail'}"
         )
     elif imports.returncode != 0:
-        fail(f"mcp_server --check-imports failed (exit {imports.returncode}):\n{imports.stderr}")
+        fail(
+            f"mcp_server --check-imports failed (exit {imports.returncode}):\n{imports.stderr}"
+        )
     else:
         note(imports.stdout.strip())
 
 
 def main() -> int:
+    """Run every offline check and report. Exit 1 on any failure, 0 otherwise."""
     check_instruction_file()
     check_skills()
     check_agents()
