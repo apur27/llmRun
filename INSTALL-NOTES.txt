@@ -1,0 +1,63 @@
+llmRun self-sufficiency scaffold
+
+WHAT THIS ADDS
+  CLAUDE.md                          repo instructions — the freeze rule, layering, gate,
+                                     where the numbers come from
+  .claude/skills/verify-numbers/     check every report figure against the artifact
+  .claude/skills/add-client/         add a ModelClient without breaking the frozen measurement
+  .claude/agents/reviewer.md         review scoped to THIS repo's rules; never edits
+  .mcp.json                          project-scoped, stdio, in-repo, no credentials
+  mcp_server/scorer_server.py        3 tools over the production domain layer
+  test/harness_check.py              offline verification of all of the above
+
+DELIBERATELY NOT ADDED
+  No hooks anywhere. No allowed-tools on any skill. A project skill's tool permissions apply
+  even in a folder the opener never trusted, and a hooks field registers hooks for the session
+  — both act on the machine of whoever clones this repo.
+
+  No surveyor/architect/engineer/auditor. Those exist to build under a deadline. This repo is
+  finished; a roster with no job is noise.
+
+  No remote MCP endpoint. The one server is a local stdio process reading a committed dataset.
+
+APPLY
+  cd /home/abhi/git/llmRun
+  # copy the tree in, then:
+  make harness-check
+
+ONE THING TO VERIFY YOURSELF FIRST
+  mcp_server/scorer_server.py calls execute_program() and score_turn(). Those names are right —
+  scripts/recompute_dev.py already imports score_turn from src/domain/scorer.py. But their
+  SIGNATURES were not read, only inferred. Check before trusting the server:
+
+      cd /home/abhi/git/llmRun
+      grep -n 'def execute_program' src/domain/executor.py
+      grep -n 'def score_turn' src/domain/scorer.py
+
+  If score_turn does not take (predicted=, gold=) or does not return an object with .outcome /
+  .reason / .scale_flip, fix tool_score() to match. harness-check runs the selftest and will
+  fail loudly if it is wrong — that is what it is for.
+
+MAKEFILE
+  Add:
+      harness-check:
+      	uv run python test/harness_check.py
+
+  and add harness-check to .PHONY.
+
+MCP DEPENDENCY
+  The server needs the `mcp` package, kept optional so it is not a core dependency:
+      uv add --optional mcp mcp
+  Without it the server exits 3 with a clear message. --selftest works regardless.
+
+VERIFIED AGAINST
+  .claude/standards/harness/claude-code.md (VERIFIED 2026-08-17, stale after 60 days)
+  https://code.claude.com/docs/en/mcp (fetched 2026-08-29, vendor page updated 1 day prior)
+
+  Source conflict noted: one secondary source claims project MCP config lives in
+  .claude/settings.json. The vendor page and four other sources say .mcp.json at the repo root.
+  Going with the vendor.
+
+WHAT harness-check CANNOT DO
+  It cannot prove an instruction file was loaded. Only /context inside a session lists what
+  Claude Code actually read, and /mcp shows server status. Both are stated in the output.

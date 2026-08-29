@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "convfinqa-domain": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PROJECT_DIR:-.}",
+        "python",
+        "mcp_server/scorer_server.py"
+      ],
+      "env": {}
+    }
+  }
+}

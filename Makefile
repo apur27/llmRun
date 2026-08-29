@@ -27,3 +27,6 @@ eval-falsify:
 # code health, same reasoning as eval-falsify above -- a separate, deliberate target.
 recompute-dev:
 	uv run python scripts/recompute_dev.py
+
+harness-check:
+	uv run python test/harness_check.py
