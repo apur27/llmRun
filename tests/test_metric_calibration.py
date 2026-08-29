@@ -24,9 +24,15 @@ from typing import Any
 
 import pytest
 
+from src.domain.scorer import RELATIVE_ERROR_TOLERANCE
+
 DATA_PATH = Path(__file__).parent.parent / "data" / "convfinqa_dataset.json"
 
-RELATIVE_ERROR_TOLERANCE = 1e-3
+# The tolerance under test is imported from production, never redefined here. A local copy
+# tracks nothing: the scorer's value could change and every assertion below would still pass,
+# because they are all inequalities that a wider tolerance satisfies more easily.
+# `test_production_tolerance_is_the_frozen_value` is what actually pins it.
+FROZEN_RELATIVE_ERROR_TOLERANCE = 1e-3
 EXPECTED_EXACT_MATCH_COUNT = 945
 EXPECTED_NUMERIC_TURN_COUNT = 1486
 EXPECTED_HIGH_PRECISION_GOLD_COUNT = 354
@@ -248,3 +254,24 @@ def test_tolerance_hides_nothing_between_1e_3_and_1e_2() -> None:
     wide_count = sum(1 for error in errors if error <= WIDE_TOLERANCE_FOR_GAP_CHECK)
 
     assert wide_count == tight_count
+
+
+def test_production_tolerance_is_the_frozen_value() -> None:
+    """The scorer's tolerance is 1e-3, and changing it invalidates every figure in REPORT.md.
+
+    This is the only assertion in the suite that fails when the production constant moves. The
+    others compare against it, so widening it makes them pass more easily, not less -- which is
+    exactly how a 10x change once went green through the whole gate while `make recompute-dev`
+    reported 76.78% against the committed 75.84%.
+
+    If this test fails, one of two things is true. Either the change was accidental, and the fix
+    is to revert it. Or it was deliberate, in which case the dev split has to be re-measured
+    (~$6, ~50 minutes), every figure in REPORT.md re-derived from the new artifact, and this
+    constant updated last. There is no third option where the number in the report describes a
+    tolerance the code no longer uses.
+    """
+    assert RELATIVE_ERROR_TOLERANCE == FROZEN_RELATIVE_ERROR_TOLERANCE, (
+        f"src.domain.scorer.RELATIVE_ERROR_TOLERANCE is {RELATIVE_ERROR_TOLERANCE}, "
+        f"frozen at {FROZEN_RELATIVE_ERROR_TOLERANCE}. Every number in REPORT.md assumes the "
+        "frozen value. See the docstring above before changing this."
+    )
