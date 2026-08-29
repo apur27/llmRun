@@ -24,3 +24,6 @@ __pycache__/
 .cache/responses/
 
 
+
+# scratch marker written by test/agent_falsification.sh
+.falsification-origin

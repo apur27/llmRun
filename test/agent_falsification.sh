@@ -122,14 +122,14 @@ revert() {
   git branch -q -D "$BRANCH" 2>/dev/null || true
   say "Reverted to $ORIGINAL, scratch branch deleted"
   git status --porcelain
-  grep -rn "FALSIFICATION-PLANT" . --exclude-dir=.git --exclude-dir=.venv \
+  grep -rn "FALSIFICATION-PLANT" . --exclude-dir=.git --exclude-dir=.venv --exclude-dir=__pycache__ --exclude=*.pyc \
     --exclude=agent_falsification.sh && die "planted markers still present" || true
   echo "no planted markers remain"
 }
 
 status() {
   echo "branch: $(git branch --show-current)"
-  grep -rn "FALSIFICATION-PLANT" . --exclude-dir=.git --exclude-dir=.venv \
+  grep -rn "FALSIFICATION-PLANT" . --exclude-dir=.git --exclude-dir=.venv --exclude-dir=__pycache__ --exclude=*.pyc \
     --exclude=agent_falsification.sh || echo "nothing planted"
 }
 
