@@ -4,6 +4,8 @@
       "command": "uv",
       "args": [
         "run",
+        "--extra",
+        "mcp",
         "--directory",
         "${CLAUDE_PROJECT_DIR:-.}",
         "python",

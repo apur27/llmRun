@@ -172,22 +172,47 @@ def selftest() -> int:
     return 1 if failed else 0
 
 
+def _load_server_class() -> tuple[type, str]:
+    """Return the MCP server class and which SDK generation it came from.
+
+    2.x renamed `FastMCP` to `MCPServer` and moved it to `mcp.server.mcpserver`. Both are tried
+    so this runs on either without pinning; the shape is the same -- `tool()` is a decorator
+    factory, `run()` defaults to stdio.
+    """
+    try:
+        from mcp.server.mcpserver import MCPServer
+
+        return MCPServer, "2.x"
+    except ModuleNotFoundError:
+        from mcp.server.fastmcp import FastMCP  # mcp<2
+
+        return FastMCP, "1.x"
+
+
 def main() -> int:
-    """Start the stdio server, or run the selftest."""
+    """Start the stdio server, run the selftest, or check that the SDK imports."""
     if "--selftest" in sys.argv:
         return selftest()
 
     try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError:
+        server_class, generation = _load_server_class()
+    except ImportError as exc:
+        # Report the actual exception. An earlier version printed "the mcp package is not
+        # installed" for any ImportError, which was wrong and actively misleading the day the
+        # SDK renamed a class -- the package was installed, the message said otherwise.
+        print(f"cannot load the MCP server class: {type(exc).__name__}: {exc}", file=sys.stderr)
         print(
-            "the 'mcp' package is not installed. it is an optional extra:\n"
+            "\nif the package is genuinely absent, it is an optional extra:\n"
             "    uv add --optional mcp mcp",
             file=sys.stderr,
         )
         return 3
 
-    server = FastMCP("convfinqa-domain")
+    if "--check-imports" in sys.argv:
+        print(f"ok    MCP SDK {generation}: {server_class.__module__}.{server_class.__name__}")
+        return 0
+
+    server = server_class("convfinqa-domain")
     server.tool()(tool_execute_program)
     server.tool()(tool_score)
     server.tool()(tool_gold_turn)

@@ -265,10 +265,17 @@ def check_mcp() -> None:
 
 
 def check_mcp_server_runs() -> None:
-    """The stdio server must at least import and pass its own selftest."""
+    """The stdio server must pass its own selftest AND be able to construct.
+
+    Two separate runs on purpose. `--selftest` exercises the tool logic against the domain layer
+    and never imports the MCP SDK; `--check-imports` loads the server class and nothing else. The
+    first passed green while the second would have failed, on the day the SDK renamed FastMCP to
+    MCPServer -- a server that cannot start while its logic tests clean.
+    """
     server = ROOT / "mcp_server" / "scorer_server.py"
     if not server.exists():
         return
+
     proc = subprocess.run(
         [sys.executable, str(server), "--selftest"],
         capture_output=True,
@@ -279,6 +286,24 @@ def check_mcp_server_runs() -> None:
         fail(f"mcp_server selftest failed (exit {proc.returncode}):\n{proc.stdout}{proc.stderr}")
     else:
         note("mcp_server selftest passed")
+
+    imports = subprocess.run(
+        [sys.executable, str(server), "--check-imports"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if imports.returncode == 3:
+        warn(
+            "mcp_server cannot load the MCP SDK, so the server will not start under Claude Code "
+            "even though its logic is sound. The SDK is an optional extra — "
+            "`uv add --optional mcp mcp`, and make sure .mcp.json's command enables the extra. "
+            f"Reported: {imports.stderr.strip().splitlines()[0] if imports.stderr.strip() else 'no detail'}"
+        )
+    elif imports.returncode != 0:
+        fail(f"mcp_server --check-imports failed (exit {imports.returncode}):\n{imports.stderr}")
+    else:
+        note(imports.stdout.strip())
 
 
 def main() -> int:
